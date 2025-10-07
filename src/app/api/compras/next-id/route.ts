@@ -1,25 +1,20 @@
-// src/lib/comprasRepo.ts (trecho)
-export async function listComprasIds(): Promise<string[]> {
-  // Se já tiver DB, troque por um SELECT só dos IDs.
-  const all = await listComprasRaw(); // você já tem este
-  return (all || []).map((r: any) => String(r?.id || "")).filter(Boolean);
-}
+// src/app/api/compras/next-id/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { nextShortId } from "@/lib/comprasRepo";
 
-// Gera próximo ID sequencial zero-padded (0001, 0002, ...)
-export async function nextShortId(): Promise<string> {
-  const ids = await listComprasIds();
-  let max = 0;
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-  for (const id of ids) {
-    // aceita 0001 / 1 / C-0001 etc.
-    const m = String(id).match(/(\d+)\s*$/);
-    if (m) {
-      const n = parseInt(m[1], 10);
-      if (Number.isFinite(n) && n > max) max = n;
-    }
+export async function GET(
+  _req: NextRequest,
+  _ctx: { params: Promise<Record<string, never>> } // mantém assinatura compatível com Next 15
+) {
+  try {
+    const next = await nextShortId();
+    return NextResponse.json({ ok: true, nextId: next, data: { nextId: next } });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Erro ao calcular próximo ID";
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
-
-  const next = max + 1;
-  // 4 dígitos com zero à esquerda; ajuste para 5/6 se quiser crescer mais
-  return next.toString().padStart(4, "0");
 }
