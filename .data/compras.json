@@ -1,0 +1,49 @@
+[
+  {
+    "id": "0008",
+    "dataCompra": "2025-10-06",
+    "statusPontos": "liberados",
+    "cedenteId": "ABE-001",
+    "cedenteNome": "Abel Francisco Do Nascimento",
+    "itens": [
+      {
+        "kind": "transferencia",
+        "data": {
+          "id": 1759790238650,
+          "origem": "livelo",
+          "destino": "latam",
+          "modo": "pontos+dinheiro",
+          "pontosUsados": 1000,
+          "pontosTotais": 100000,
+          "valorPago": 3190,
+          "bonusPct": 30,
+          "status": "liberado"
+        }
+      }
+    ],
+    "totais": {
+      "totalCIA": 130000,
+      "custoTotal": 3221.9,
+      "custoMilheiroTotal": 24.783846153846156,
+      "lucroTotal": 194.4999999999999
+    },
+    "totaisId": {
+      "totalPts": 130000,
+      "custoTotal": 3221.9,
+      "custoMilheiro": 24.783846153846156,
+      "lucroTotal": 194.4999999999999
+    },
+    "modo": "transferencia",
+    "destCia": "latam",
+    "origem": "livelo",
+    "calculos": {
+      "totalPts": 130000,
+      "custoTotal": 3221.9,
+      "custoMilheiro": 24.783846153846156,
+      "lucroTotal": 194.4999999999999
+    },
+    "metaMilheiro": 26.28,
+    "comissaoCedente": 0,
+    "savedAt": 1759790271550
+  }
+]

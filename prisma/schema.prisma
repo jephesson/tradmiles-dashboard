@@ -1,0 +1,9 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // pooler
+  directUrl = env("DIRECT_URL")   // direto (migrações/seed)
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
