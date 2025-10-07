@@ -1,9 +1,11 @@
 // app/api/vendas/route.ts
 import { NextResponse } from "next/server";
-import fs from "fs/promises";
-import path from "path";
+import fs from "node:fs/promises";
+import path from "node:path";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 type PaymentStatus = "pago" | "pendente";
 type CIA = "latam" | "smiles";
@@ -69,20 +71,33 @@ type VendaRecord = {
   cancelInfo?: CancelInfo | null;
 };
 
-const DATA_DIR = path.join(process.cwd(), "data");
+/* ================== Persistência ================== */
+// Em produção (Vercel) só /tmp é gravável; local: ./data
+const ROOT_DIR = process.env.VERCEL ? "/tmp" : process.cwd();
+const DATA_DIR = path.join(ROOT_DIR, "data");
 const VENDAS_FILE = path.join(DATA_DIR, "vendas.json");
 const CEDENTES_FILE = path.join(DATA_DIR, "cedentes.json");
 
 async function ensureDir() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
+  try {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+  } catch {
+    /* noop */
+  }
 }
 
 async function readJson<T>(file: string, fallback: T): Promise<T> {
   try {
     const raw = await fs.readFile(file, "utf8");
     return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return fallback;
+    // Se o arquivo existir mas estiver corrompido, não derruba a API
+    try {
+      return fallback;
+    } catch {
+      return fallback;
+    }
   }
 }
 
@@ -93,6 +108,16 @@ async function writeJson(file: string, data: any) {
 
 function up(s: any) {
   return String(s || "").toUpperCase();
+}
+
+function noCache() {
+  return {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+    "Surrogate-Control": "no-store",
+  };
 }
 
 function pickCedenteFields(c: any) {
@@ -154,9 +179,10 @@ async function loadCedentesFile(): Promise<{
   return { list, write };
 }
 
+/* ================== Handlers ================== */
 export async function GET() {
   const vendas = await readJson<VendaRecord[]>(VENDAS_FILE, []);
-  return NextResponse.json({ ok: true, lista: vendas });
+  return NextResponse.json({ ok: true, lista: vendas }, { headers: noCache() });
 }
 
 export async function POST(req: Request) {
@@ -166,7 +192,7 @@ export async function POST(req: Request) {
     if (!body?.cia || !body?.pontos) {
       return NextResponse.json(
         { ok: false, error: "Campos obrigatórios ausentes (cia, pontos)." },
-        { status: 400 }
+        { status: 400, headers: noCache() }
       );
     }
 
@@ -186,6 +212,7 @@ export async function POST(req: Request) {
         ? seedArr.map(pickCedenteFields)
         : [];
 
+    // Se não existe arquivo e veio um snapshot no POST, inicializa o arquivo
     if (cedentesFromDisk.length === 0 && seedArr.length) {
       await writeJson(CEDENTES_FILE, cedentes);
     }
@@ -260,11 +287,11 @@ export async function POST(req: Request) {
 
     await writeCedentesPreservingShape(cedentes);
 
-    return NextResponse.json({ ok: true, id, nextCedentes: cedentes });
+    return NextResponse.json({ ok: true, id, nextCedentes: cedentes }, { headers: noCache() });
   } catch (e: any) {
     return NextResponse.json(
       { ok: false, error: e?.message || "Erro inesperado" },
-      { status: 500 }
+      { status: 500, headers: noCache() }
     );
   }
 }
@@ -276,7 +303,10 @@ export async function PATCH(req: Request) {
 
     const idx = vendas.findIndex((v) => v.id === body?.id);
     if (idx < 0) {
-      return NextResponse.json({ ok: false, error: "Venda não encontrada." }, { status: 404 });
+      return NextResponse.json(
+        { ok: false, error: "Venda não encontrada." },
+        { status: 404, headers: noCache() }
+      );
     }
     const cur = vendas[idx];
 
@@ -284,7 +314,7 @@ export async function PATCH(req: Request) {
     if (body.pagamentoStatus && (body.pagamentoStatus === "pago" || body.pagamentoStatus === "pendente")) {
       vendas[idx] = { ...cur, pagamentoStatus: body.pagamentoStatus as PaymentStatus };
       await writeJson(VENDAS_FILE, vendas);
-      return NextResponse.json({ ok: true, record: vendas[idx] });
+      return NextResponse.json({ ok: true, record: vendas[idx] }, { headers: noCache() });
     }
 
     // 2) Cancelamento (com taxas/estorno e possível devolução de pontos)
@@ -331,15 +361,18 @@ export async function PATCH(req: Request) {
 
       vendas[idx] = updated;
       await writeJson(VENDAS_FILE, vendas);
-      return NextResponse.json({ ok: true, record: updated });
+      return NextResponse.json({ ok: true, record: updated }, { headers: noCache() });
     }
 
     return NextResponse.json(
       { ok: false, error: "Nada para atualizar (use pagamentoStatus ou cancel)." },
-      { status: 400 }
+      { status: 400, headers: noCache() }
     );
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "Erro inesperado" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e?.message || "Erro inesperado" },
+      { status: 500, headers: noCache() }
+    );
   }
 }
 
@@ -357,13 +390,19 @@ export async function DELETE(req: Request) {
     } catch {}
 
     if (!id) {
-      return NextResponse.json({ ok: false, error: "ID é obrigatório." }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "ID é obrigatório." },
+        { status: 400, headers: noCache() }
+      );
     }
 
     const vendas = await readJson<VendaRecord[]>(VENDAS_FILE, []);
     const idx = vendas.findIndex((v) => v.id === id);
     if (idx < 0) {
-      return NextResponse.json({ ok: false, error: "Venda não encontrada." }, { status: 404 });
+      return NextResponse.json(
+        { ok: false, error: "Venda não encontrada." },
+        { status: 404, headers: noCache() }
+      );
     }
 
     const removed = vendas[idx];
@@ -392,8 +431,11 @@ export async function DELETE(req: Request) {
 
     vendas.splice(idx, 1);
     await writeJson(VENDAS_FILE, vendas);
-    return NextResponse.json({ ok: true, removedId: id });
+    return NextResponse.json({ ok: true, removedId: id }, { headers: noCache() });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "Erro inesperado" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: e?.message || "Erro inesperado" },
+      { status: 500, headers: noCache() }
+    );
   }
 }

@@ -1,55 +1,122 @@
 // app/api/comissoes/route.ts
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { prisma } from "@/lib/db"; // ajuste para "@/lib/prisma" se for o seu caso
+import { Prisma } from "@prisma/client";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+function noCache() {
+  return {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+    "Surrogate-Control": "no-store",
+  };
+}
+
+type Status = "pago" | "aguardando";
+
+/* ================= GET ================= */
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const q = (searchParams.get("q") || "").toLowerCase();
-  const status = searchParams.get("status") || "";
+  try {
+    const { searchParams } = new URL(req.url);
+    const q = (searchParams.get("q") || "").trim();
+    const statusParam = (searchParams.get("status") || "").trim() as Status | "";
 
-  const where: any = {};
-  if (status) where.status = status;
-  if (q) {
-    where.OR = [
-      { cedenteNome: { contains: q, mode: "insensitive" } },
-      { compraId:    { contains: q, mode: "insensitive" } },
-    ];
+    const where: Prisma.ComissaoWhereInput = {};
+
+    if (statusParam) {
+      where.status = statusParam;
+    }
+
+    if (q) {
+      where.OR = [
+        { cedenteNome: { contains: q, mode: "insensitive" } },
+        { compraId: { contains: q, mode: "insensitive" } },
+      ];
+    }
+
+    const data = await prisma.comissao.findMany({
+      where,
+      orderBy: { criadoEm: "desc" },
+    });
+
+    return NextResponse.json({ ok: true, data }, { headers: noCache() });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "erro ao carregar comissões";
+    return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCache() });
   }
+}
 
-  const data = await prisma.comissao.findMany({
-    where,
-    orderBy: { criadoEm: "desc" },
-  });
+/* ================= POST =================
+Body aceito:
+{
+  "compraId": string,
+  "cedenteId": string,
+  "cedenteNome"?: string,
+  "valor": number | string,
+  "status"?: "pago" | "aguardando"
+}
+Salva/upserta pela única (compraId, cedenteId)
+========================================== */
+type PostBody = {
+  compraId: string;
+  cedenteId: string;
+  cedenteNome?: string | null;
+  valor: number | string;
+  status?: Status | "";
+};
 
-  return NextResponse.json({ data });
+function toDecimal(v: unknown): Prisma.Decimal {
+  // Prisma aceita number | string | Decimal; normalizamos com segurança
+  if (typeof v === "number" && Number.isFinite(v)) return new Prisma.Decimal(v);
+  if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) {
+    return new Prisma.Decimal(v);
+  }
+  return new Prisma.Decimal(0);
 }
 
 export async function POST(req: Request) {
-  const body = await req.json();
-  const { compraId, cedenteId, cedenteNome, valor, status } = body || {};
-  if (!compraId || !cedenteId) {
-    return NextResponse.json(
-      { ok: false, error: "compraId e cedenteId são obrigatórios" },
-      { status: 400 }
-    );
+  try {
+    const raw = (await req.json()) as unknown;
+    const body = raw as Partial<PostBody>;
+
+    const compraId = String(body.compraId ?? "").trim();
+    const cedenteId = String(body.cedenteId ?? "").trim();
+    if (!compraId || !cedenteId) {
+      return NextResponse.json(
+        { ok: false, error: "compraId e cedenteId são obrigatórios" },
+        { status: 400, headers: noCache() }
+      );
+    }
+
+    const cedenteNome = (body.cedenteNome ?? "") || "";
+    const valor = toDecimal(body.valor);
+    const status: Status = (body.status === "pago" ? "pago" : "aguardando");
+
+    const data = await prisma.comissao.upsert({
+      where: { compraId_cedenteId: { compraId, cedenteId } },
+      update: {
+        cedenteNome,
+        valor,           // Decimal
+        status,
+        atualizadoEm: new Date(),
+      },
+      create: {
+        compraId,
+        cedenteId,
+        cedenteNome,
+        valor,           // Decimal
+        status,
+      },
+    });
+
+    return NextResponse.json({ ok: true, data }, { headers: noCache() });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "erro ao salvar comissão";
+    return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCache() });
   }
-
-  const data = await prisma.comissao.upsert({
-    where: { compraId_cedenteId: { compraId, cedenteId } },
-    update: {
-      cedenteNome: cedenteNome ?? "",
-      valor: Number(valor || 0),
-      status: status || "aguardando",
-      atualizadoEm: new Date(),
-    },
-    create: {
-      compraId,
-      cedenteId,
-      cedenteNome: cedenteNome ?? "",
-      valor: Number(valor || 0),
-      status: status || "aguardando",
-    },
-  });
-
-  return NextResponse.json({ ok: true, data });
 }

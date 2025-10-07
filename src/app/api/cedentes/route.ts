@@ -15,14 +15,30 @@ const ROOT_DIR = process.env.VERCEL ? "/tmp" : process.cwd();
 const DATA_DIR = path.join(ROOT_DIR, "data");
 const DATA_FILE = path.join(DATA_DIR, "cedentes.json");
 
+// Tipos auxiliares para JSON seguro (sem any)
+type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | Json[]
+  | { [k: string]: Json };
+
+type CedentesPayload = {
+  savedAt: string;
+} & Record<string, Json>;
+
+function isRecord(v: unknown): v is Record<string, Json> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 // Cabeçalhos de resposta para evitar cache no cliente/CDN
-function noCacheHeaders() {
+function noCacheHeaders(): Record<string, string> {
   return {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
     Pragma: "no-cache",
     Expires: "0",
-    // evita caching intermediário em CDNs que não respeitam Cache-Control
     "Surrogate-Control": "no-store",
   };
 }
@@ -39,32 +55,45 @@ async function ensureDir() {
 export async function GET() {
   try {
     await ensureDir();
-    let json: any = null;
+    let json: CedentesPayload | null = null;
 
     try {
       const buf = await fs.readFile(DATA_FILE);
-      json = JSON.parse(buf.toString("utf-8"));
-    } catch (e: any) {
-      if (e?.code !== "ENOENT") throw e; // outro erro que não seja "arquivo não existe"
-      json = null; // primeira execução sem arquivo
+      const parsed = JSON.parse(buf.toString("utf-8"));
+      json = isRecord(parsed)
+        ? ({ savedAt: String(parsed.savedAt ?? ""), ...parsed } as CedentesPayload)
+        : null;
+    } catch (e: unknown) {
+      // Se não existir o arquivo, apenas retorna null
+      if (
+        typeof e === "object" &&
+        e !== null &&
+        "code" in e &&
+        (e as { code?: string }).code === "ENOENT"
+      ) {
+        json = null;
+      } else {
+        throw e;
+      }
     }
 
-    return new NextResponse(
-      JSON.stringify({ ok: true, data: json }),
-      { status: 200, headers: noCacheHeaders() }
-    );
-  } catch (e: any) {
-    return new NextResponse(
-      JSON.stringify({ ok: false, error: e?.message || "erro ao carregar" }),
-      { status: 500, headers: noCacheHeaders() }
-    );
+    return NextResponse.json({ ok: true, data: json }, { status: 200, headers: noCacheHeaders() });
+  } catch (e: unknown) {
+    const message =
+      typeof e === "object" && e !== null && "message" in e
+        ? String((e as { message?: unknown }).message)
+        : "erro ao carregar";
+
+    return NextResponse.json({ ok: false, error: message }, { status: 500, headers: noCacheHeaders() });
   }
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json(); // { listaCedentes, meta? }
-    const payload = {
+    const raw = await req.json();
+    const body = isRecord(raw) ? raw : {};
+
+    const payload: CedentesPayload = {
       savedAt: new Date().toISOString(),
       ...body,
     };
@@ -72,14 +101,13 @@ export async function POST(req: Request) {
     await ensureDir();
     await fs.writeFile(DATA_FILE, JSON.stringify(payload, null, 2), "utf-8");
 
-    return new NextResponse(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: noCacheHeaders(),
-    });
-  } catch (e: any) {
-    return new NextResponse(
-      JSON.stringify({ ok: false, error: e?.message || "erro ao salvar" }),
-      { status: 500, headers: noCacheHeaders() }
-    );
+    return NextResponse.json({ ok: true }, { status: 200, headers: noCacheHeaders() });
+  } catch (e: unknown) {
+    const message =
+      typeof e === "object" && e !== null && "message" in e
+        ? String((e as { message?: unknown }).message)
+        : "erro ao salvar";
+
+    return NextResponse.json({ ok: false, error: message }, { status: 500, headers: noCacheHeaders() });
   }
 }

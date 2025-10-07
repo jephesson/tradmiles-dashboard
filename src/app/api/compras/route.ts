@@ -1,4 +1,4 @@
-// src/app/api/compras/route.ts
+// app/api/compras/route.ts
 import { NextResponse } from "next/server";
 import {
   listComprasRaw,
@@ -8,170 +8,217 @@ import {
   deleteCompraById,
 } from "@/lib/comprasRepo";
 
-/** ---------------- Helpers ---------------- */
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+/* ---------------- Helpers de tipos/guards ---------------- */
 type CIA = "latam" | "smiles";
 type Origem = "livelo" | "esfera";
 type Status = "aguardando" | "liberados";
 
-function toMoney(n: any) {
-  const v = Number(n);
-  return Number.isFinite(v) ? v : 0;
+type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | Json[]
+  | { [k: string]: Json };
+
+type AnyObj = Record<string, unknown>;
+
+function isRecord(v: unknown): v is AnyObj {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function num(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+function str(v: unknown): string {
+  return typeof v === "string" ? v : v == null ? "" : String(v);
+}
+function noCache() {
+  return {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+    "Surrogate-Control": "no-store",
+  };
 }
 
-/** ---------------- Totais (compat) ---------------- */
+/* ---------------- Helpers numéricos ---------------- */
+function toMoney(v: unknown): number {
+  return num(v);
+}
+
+/* ---------------- Totais (compat) ---------------- */
 /** Lê tanto totalCIA quanto pontosCIA (nome usado na tela nova) */
-function totalsCompatFromTotais(totais: any | undefined) {
-  const totalPtsRaw = Number((totais?.totalCIA ?? totais?.pontosCIA) || 0);
+function totalsCompatFromTotais(totais: unknown) {
+  const t = isRecord(totais) ? totais : {};
+  const totalPtsRaw = num((t as AnyObj).totalCIA ?? (t as AnyObj).pontosCIA);
   const totalPts = Math.round(totalPtsRaw);
-  const custoTotal = toMoney(totais?.custoTotal || 0);
+  const custoTotal = toMoney((t as AnyObj).custoTotal ?? 0);
   const custoMilheiro =
-    Number(totais?.custoMilheiroTotal) && Number(totais?.custoMilheiroTotal) > 0
-      ? Number(totais?.custoMilheiroTotal)
+    num((t as AnyObj).custoMilheiroTotal) > 0
+      ? num((t as AnyObj).custoMilheiroTotal)
       : totalPts > 0
       ? custoTotal / (totalPts / 1000)
       : 0;
-  const lucroTotal = toMoney(totais?.lucroTotal || 0);
+  const lucroTotal = toMoney((t as AnyObj).lucroTotal ?? 0);
   return { totalPts, custoTotal, custoMilheiro, lucroTotal };
 }
 
 /** quando vier no formato antigo (com resumo dentro de itens) */
-function totalsFromItemsResumo(itens: any[]) {
-  const totalPts = itens.reduce((s, i) => s + (i?.resumo?.totalPts || 0), 0);
-  const custoTotal = itens.reduce((s, i) => s + (i?.resumo?.custoTotal || 0), 0);
-  const pesoAcum = itens.reduce(
+function totalsFromItemsResumo(itens: unknown[]) {
+  const safe = Array.isArray(itens) ? (itens as AnyObj[]) : [];
+  const totalPts = safe.reduce((s, i) => s + num((i.resumo as AnyObj | undefined)?.totalPts), 0);
+  const custoTotal = safe.reduce((s, i) => s + num((i.resumo as AnyObj | undefined)?.custoTotal), 0);
+
+  const pesoAcum = safe.reduce(
     (acc, i) => {
-      const milheiros = (i?.resumo?.totalPts || 0) / 1000;
+      const milheiros = num((i.resumo as AnyObj | undefined)?.totalPts) / 1000;
       if (milheiros > 0) {
         acc.peso += milheiros;
-        acc.acum += (i?.resumo?.custoTotal || 0) / milheiros;
+        acc.acum += num((i.resumo as AnyObj | undefined)?.custoTotal) / milheiros;
       }
       return acc;
     },
     { peso: 0, acum: 0 }
   );
+
   const custoMilheiro = pesoAcum.peso > 0 ? pesoAcum.acum / pesoAcum.peso : 0;
-  const lucroTotal = itens.reduce((s, i) => s + (i?.resumo?.lucroTotal || 0), 0);
+  const lucroTotal = safe.reduce((s, i) => s + num((i.resumo as AnyObj | undefined)?.lucroTotal), 0);
   return { totalPts, custoTotal, custoMilheiro, lucroTotal };
 }
 
 /** novo formato: soma por kind aplicando bônus e custos corretos */
-function totalsFromItemsData(itens: any[]) {
+function totalsFromItemsData(itens: unknown[]) {
+  const arr = Array.isArray(itens) ? (itens as AnyObj[]) : [];
   let totalPts = 0;
   let custoTotal = 0;
 
-  for (const it of itens || []) {
-    const kind = it?.kind;
-    const d = it?.data || {};
+  for (const it of arr) {
+    const kind = str((it as AnyObj).kind ?? (it as AnyObj).modo);
+    const d = isRecord((it as AnyObj).data) ? ((it as AnyObj).data as AnyObj) : {};
 
     if (kind === "transferencia") {
-      const base =
-        (d?.modo === "pontos+dinheiro" ? Number(d?.pontosTotais) : Number(d?.pontosUsados)) || 0;
-      const bonus = Number(d?.bonusPct) || 0;
+      const modo = str(d.modo);
+      const base = modo === "pontos+dinheiro" ? num(d.pontosTotais) : num(d.pontosUsados);
+      const bonus = num(d.bonusPct);
       const chegam = Math.round(base * (1 + bonus / 100));
       totalPts += Math.max(0, chegam);
-      custoTotal += toMoney(d?.valorPago || 0);
+      custoTotal += toMoney(d.valorPago);
       continue;
     }
 
     if (kind === "compra") {
-      const programa = String(d?.programa || "");
-      const ptsBase = Number(d?.pontos) || 0;
-      const bonus = Number(d?.bonusPct) || 0;
+      const programa = str(d.programa);
+      const ptsBase = num(d.pontos);
+      const bonus = num(d.bonusPct);
       if (programa === "latam" || programa === "smiles") {
         totalPts += Math.round(ptsBase * (1 + bonus / 100));
       }
-      custoTotal += toMoney(d?.valor || 0);
+      custoTotal += toMoney(d.valor);
       continue;
     }
 
     if (kind === "clube") {
-      const programa = String(d?.programa || "");
-      const pts = Number(d?.pontos) || 0;
+      const programa = str(d.programa);
+      const pts = num(d.pontos);
       if (programa === "latam" || programa === "smiles") {
         totalPts += Math.max(0, pts);
       }
-      custoTotal += toMoney(d?.valor || 0);
+      custoTotal += toMoney(d.valor);
       continue;
     }
 
     // Fallbacks genéricos
     const ptsCandidates = [
-      d?.chegam,
-      d?.chegamPts,
-      d?.totalCIA,
-      d?.pontosCIA,
-      d?.total_destino,
-      d?.total,
-      d?.quantidade,
-      d?.pontosTotais,
-      d?.pontosUsados,
-      d?.pontos,
+      d.chegam,
+      d.chegamPts,
+      d.totalCIA,
+      d.pontosCIA,
+      d.total_destino,
+      d.total,
+      d.quantidade,
+      d.pontosTotais,
+      d.pontosUsados,
+      d.pontos,
     ];
-    const custoCandidates = [
-      d?.custoTotal,
-      d?.valor,
-      d?.valorPago,
-      d?.precoTotal,
-      d?.preco,
-      d?.custo,
-    ];
+    const custoCandidates = [d.custoTotal, d.valor, d.valorPago, d.precoTotal, d.preco, d.custo];
 
-    const pts = Number(ptsCandidates.find((v) => Number(v) > 0) || 0);
-    const custo = toMoney(custoCandidates.find((v) => Number(v) > 0) || 0);
+    const pts = num(ptsCandidates.find((v) => num(v) > 0));
+    const custo = toMoney(custoCandidates.find((v) => num(v) > 0));
 
-    const ptsAlt = Number(it?.totais?.totalCIA || it?.totais?.pontosCIA || it?.totais?.cia || 0);
-    const custoAlt = toMoney(it?.totais?.custoTotal || 0);
+    const totais = isRecord((it as AnyObj).totais) ? ((it as AnyObj).totais as AnyObj) : undefined;
+    const ptsAlt = num(totais?.totalCIA ?? totais?.pontosCIA ?? totais?.cia);
+    const custoAlt = toMoney(totais?.custoTotal);
 
     totalPts += pts > 0 ? pts : ptsAlt;
     custoTotal += custo > 0 ? custo : custoAlt;
 
-    if (!(pts > 0 || ptsAlt > 0) && it?.resumo?.totalPts) totalPts += Number(it.resumo.totalPts || 0);
-    if (!(custo > 0 || custoAlt > 0) && it?.resumo?.custoTotal) custoTotal += Number(it.resumo.custoTotal || 0);
+    if (!(pts > 0 || ptsAlt > 0) && isRecord((it as AnyObj).resumo)) {
+      totalPts += num(((it as AnyObj).resumo as AnyObj).totalPts);
+    }
+    if (!(custo > 0 || custoAlt > 0) && isRecord((it as AnyObj).resumo)) {
+      custoTotal += num(((it as AnyObj).resumo as AnyObj).custoTotal);
+    }
   }
 
   const custoMilheiro = totalPts > 0 ? custoTotal / (totalPts / 1000) : 0;
-  const lucroTotal =
-    itens.reduce((s, i) => s + (toMoney(i?.resumo?.lucroTotal) || 0), 0) || 0;
+  const lucroTotal = arr.reduce((s, i) => s + num((i.resumo as AnyObj | undefined)?.lucroTotal), 0);
 
   return { totalPts, custoTotal, custoMilheiro, lucroTotal };
 }
 
 /** escolhe automaticamente o melhor jeito de consolidar totais */
-function smartTotals(itens: any[], totais?: any) {
-  if (totais && (totais.totalCIA || totais.pontosCIA || totais.custoTotal || totais.custoMilheiroTotal)) {
+function smartTotals(itens: unknown[], totais?: unknown) {
+  if (
+    totais &&
+    (isRecord(totais) &&
+      ("totalCIA" in totais ||
+        "pontosCIA" in totais ||
+        "custoTotal" in totais ||
+        "custoMilheiroTotal" in totais))
+  ) {
     return totalsCompatFromTotais(totais);
   }
-  const hasResumo = (itens || []).some((i) => i?.resumo);
-  if (hasResumo) return totalsFromItemsResumo(itens);
+  const hasResumo =
+    Array.isArray(itens) &&
+    (itens as AnyObj[]).some((i) => isRecord(i.resumo));
+  if (hasResumo) return totalsFromItemsResumo(itens as AnyObj[]);
   return totalsFromItemsData(itens);
 }
 
 /** -------- Normalizações (compat) -------- */
-function normalizeFromOldShape(body: any) {
+function normalizeFromOldShape(body: AnyObj) {
   const modo: "compra" | "transferencia" =
-    body.modo || (body.origem ? "transferencia" : "compra");
+    (str(body.modo) as "compra" | "transferencia") ||
+    (body.origem ? "transferencia" : "compra");
 
   const resumo = {
-    totalPts: Number(body?.calculos?.totalPts || 0),
-    custoMilheiro: Number(body?.calculos?.custoMilheiro || 0),
-    custoTotal: Number(body?.calculos?.custoTotal || 0),
-    lucroTotal: Number(body?.calculos?.lucroTotal || 0),
+    totalPts: num((body.calculos as AnyObj | undefined)?.totalPts),
+    custoMilheiro: num((body.calculos as AnyObj | undefined)?.custoMilheiro),
+    custoTotal: num((body.calculos as AnyObj | undefined)?.custoTotal),
+    lucroTotal: num((body.calculos as AnyObj | undefined)?.lucroTotal),
   };
 
-  const valores = body.valores || {
-    ciaCompra: body.ciaCompra,
-    destCia: body.destCia,
-    origem: body.origem,
-  };
+  const valores =
+    (isRecord(body.valores) ? (body.valores as AnyObj) : undefined) ?? {
+      ciaCompra: body.ciaCompra,
+      destCia: body.destCia,
+      origem: body.origem,
+    };
 
   const itens = [{ idx: 1, modo, resumo, valores }];
   const totaisId = { ...resumo };
 
   const compat = {
     modo,
-    ciaCompra: modo === "compra" ? valores?.ciaCompra ?? null : null,
-    destCia: modo === "transferencia" ? valores?.destCia ?? null : null,
-    origem: modo === "transferencia" ? valores?.origem ?? null : null,
+    ciaCompra: modo === "compra" ? (valores?.ciaCompra as CIA | null) ?? null : null,
+    destCia: modo === "transferencia" ? (valores?.destCia as CIA | null) ?? null : null,
+    origem: modo === "transferencia" ? (valores?.origem as Origem | null) ?? null : null,
   };
 
   const totais = {
@@ -184,13 +231,18 @@ function normalizeFromOldShape(body: any) {
   return { itens, totaisId, totais, compat };
 }
 
-function normalizeFromNewShape(body: any) {
-  const itens: any[] = Array.isArray(body.itens) ? body.itens : [];
+function normalizeFromNewShape(body: AnyObj) {
+  const itens: unknown[] = Array.isArray(body.itens) ? (body.itens as unknown[]) : [];
   const totals = smartTotals(itens, body.totais);
 
   // compat para listagem/filtros antigos
   let modo: "compra" | "transferencia" | null = null;
-  const kinds = new Set((itens || []).map((it: any) => it?.modo || it?.kind));
+  const kinds = new Set(
+    (itens || []).map((it) => {
+      const o = it as AnyObj;
+      return (o.modo as string | undefined) ?? (o.kind as string | undefined);
+    })
+  );
   if (kinds.size === 1) {
     const k = [...kinds][0];
     if (k === "compra" || k === "transferencia") modo = k;
@@ -200,16 +252,20 @@ function normalizeFromNewShape(body: any) {
   let destCia: CIA | null = null;
   let origem: Origem | null = null;
 
-  const firstCompra = (itens || []).find((x: any) => x.kind === "compra" || x.modo === "compra");
-  const firstTransf = (itens || []).find((x: any) => x.kind === "transferencia" || x.modo === "transferencia");
+  const firstCompra = (itens || []).find((x) => (x as AnyObj).kind === "compra" || (x as AnyObj).modo === "compra") as
+    | AnyObj
+    | undefined;
+  const firstTransf = (itens || []).find(
+    (x) => (x as AnyObj).kind === "transferencia" || (x as AnyObj).modo === "transferencia"
+  ) as AnyObj | undefined;
 
-  if (firstCompra?.data?.programa) {
-    const p = firstCompra.data.programa;
+  if (isRecord(firstCompra?.data)) {
+    const p = str((firstCompra.data as AnyObj).programa);
     if (p === "latam" || p === "smiles") ciaCompra = p;
   }
-  if (firstTransf?.data) {
-    const d = firstTransf.data.destino;
-    const o = firstTransf.data.origem;
+  if (isRecord(firstTransf?.data)) {
+    const d = str((firstTransf.data as AnyObj).destino);
+    const o = str((firstTransf.data as AnyObj).origem);
     if (d === "latam" || d === "smiles") destCia = d;
     if (o === "livelo" || o === "esfera") origem = o;
   }
@@ -235,225 +291,265 @@ function normalizeFromNewShape(body: any) {
 
 /** ===================== GET ===================== */
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const id = url.searchParams.get("id");
+  try {
+    const url = new URL(req.url);
+    const id = url.searchParams.get("id");
 
-  // /api/compras?id=0001 -> retorna DOC (com totais preenchidos)
-  if (id) {
-    const item = await findCompraById(id);
-    if (!item) return NextResponse.json({ error: "Não encontrado" }, { status: 404 });
+    // /api/compras?id=0001 -> retorna DOC (com totais preenchidos)
+    if (id) {
+      const item = (await findCompraById(id)) as AnyObj | null;
+      if (!item) {
+        return NextResponse.json({ error: "Não encontrado" }, { status: 404, headers: noCache() });
+      }
 
-    if (!item.totais || !Number(item.totais.totalCIA ?? item.totais.pontosCIA)) {
-      const totals = smartTotals(item.itens || [], item.totais);
-      item.totais = {
-        totalCIA: totals.totalPts,
-        custoTotal: totals.custoTotal,
-        custoMilheiroTotal: totals.custoMilheiro,
-        lucroTotal: totals.lucroTotal,
-      };
-      item.totaisId = {
-        totalPts: totals.totalPts,
-        custoTotal: totals.custoTotal,
-        custoMilheiro: totals.custoMilheiro,
-        lucroTotal: totals.lucroTotal,
-      };
-      item.calculos = { ...item.totaisId };
-    }
-    return NextResponse.json(item);
-  }
+      const totaisObj = isRecord(item.totais) ? (item.totais as AnyObj) : undefined;
+      const hasPts = num(totaisObj?.totalCIA ?? totaisObj?.pontosCIA) > 0;
 
-  // listagem + filtros
-  const q = (url.searchParams.get("q") || "").toLowerCase();
-  const modoFil = url.searchParams.get("modo") || "";
-  const ciaFil = url.searchParams.get("cia") || "";
-  const origemFil = url.searchParams.get("origem") || "";
-  const start = url.searchParams.get("start") || "";
-  const end = url.searchParams.get("end") || "";
-  const offset = parseInt(url.searchParams.get("offset") || "0", 10);
-  const limit = parseInt(url.searchParams.get("limit") || "20", 10);
-
-  const all = await listComprasRaw();
-
-  const firstModo = (r: any) =>
-    r.modo || r.itens?.[0]?.modo || r.itens?.[0]?.kind || "";
-
-  const rowCIA = (r: any) => {
-    const m = r.modo || r.itens?.[0]?.modo || r.itens?.[0]?.kind;
-    if (m === "compra")
-      return r.ciaCompra || r.itens?.[0]?.valores?.ciaCompra || r.itens?.find((x: any)=>x.kind==="compra")?.data?.programa || "";
-    if (m === "transferencia")
-      return r.destCia || r.itens?.[0]?.valores?.destCia || r.itens?.find((x: any)=>x.kind==="transferencia")?.data?.destino || "";
-    return "";
-  };
-
-  const rowOrigem = (r: any) =>
-    r.origem ||
-    r.itens?.[0]?.valores?.origem ||
-    r.itens?.find((x: any)=>x.kind==="transferencia")?.data?.origem ||
-    "";
-
-  // Normaliza totais por linha (aceitando pontosCIA)
-  const normalized = (all || []).map((r: any) => {
-    const hasPts = Number(r?.totais?.totalCIA ?? r?.totais?.pontosCIA) > 0;
-    if (!hasPts) {
-      const totals = smartTotals(r.itens || [], r.totais);
-      r = {
-        ...r,
-        totais: {
+      if (!hasPts) {
+        const totals = smartTotals((item.itens as unknown[]) || [], item.totais);
+        item.totais = {
           totalCIA: totals.totalPts,
           custoTotal: totals.custoTotal,
           custoMilheiroTotal: totals.custoMilheiro,
           lucroTotal: totals.lucroTotal,
-        },
-        totaisId: {
+        };
+        item.totaisId = {
           totalPts: totals.totalPts,
           custoTotal: totals.custoTotal,
           custoMilheiro: totals.custoMilheiro,
           lucroTotal: totals.lucroTotal,
-        },
-        calculos: {
-          totalPts: totals.totalPts,
-          custoTotal: totals.custoTotal,
-          custoMilheiro: totals.custoMilheiro,
-          lucroTotal: totals.lucroTotal,
-        },
-      };
-    } else if (r?.totais?.pontosCIA && !r?.totais?.totalCIA) {
-      // se vieram só pontosCIA, espelha para totalCIA
-      r = { ...r, totais: { ...r.totais, totalCIA: Number(r.totais.pontosCIA) } };
+        };
+        item.calculos = { ...item.totaisId };
+      }
+      return NextResponse.json(item, { headers: noCache() });
     }
-    return r;
-  });
 
-  let rows = normalized.slice();
+    // listagem + filtros
+    const q = (url.searchParams.get("q") || "").toLowerCase();
+    const modoFil = url.searchParams.get("modo") || "";
+    const ciaFil = url.searchParams.get("cia") || "";
+    const origemFil = url.searchParams.get("origem") || "";
+    const start = url.searchParams.get("start") || "";
+    const end = url.searchParams.get("end") || "";
+    const offset = parseInt(url.searchParams.get("offset") || "0", 10);
+    const limit = parseInt(url.searchParams.get("limit") || "20", 10);
 
-  if (q) {
-    rows = rows.filter(
-      (r) =>
-        String(r.id).toLowerCase().includes(q) ||
-        String(r.cedenteId || "").toLowerCase().includes(q) ||
-        String(r.cedenteNome || "").toLowerCase().includes(q)
-    );
+    const all = (await listComprasRaw()) as AnyObj[];
+
+    const firstModo = (r: AnyObj) => str(r.modo ?? (r.itens as AnyObj[] | undefined)?.[0]?.modo ?? (r.itens as AnyObj[] | undefined)?.[0]?.kind);
+
+    const rowCIA = (r: AnyObj) => {
+      const m = str(r.modo ?? (r.itens as AnyObj[] | undefined)?.[0]?.modo ?? (r.itens as AnyObj[] | undefined)?.[0]?.kind);
+      if (m === "compra") {
+        return (
+          str(r.ciaCompra) ||
+          str((r.itens as AnyObj[] | undefined)?.[0]?.valores && ((r.itens as AnyObj[])[0].valores as AnyObj).ciaCompra) ||
+          str((r.itens as AnyObj[] | undefined)?.find((x) => str((x as AnyObj).kind) === "compra")?.data && (((r.itens as AnyObj[]).find((x) => str((x as AnyObj).kind) === "compra") as AnyObj).data as AnyObj).programa) ||
+          ""
+        );
+      }
+      if (m === "transferencia") {
+        return (
+          str(r.destCia) ||
+          str((r.itens as AnyObj[] | undefined)?.[0]?.valores && ((r.itens as AnyObj[])[0].valores as AnyObj).destCia) ||
+          str((r.itens as AnyObj[] | undefined)?.find((x) => str((x as AnyObj).kind) === "transferencia")?.data && (((r.itens as AnyObj[]).find((x) => str((x as AnyObj).kind) === "transferencia") as AnyObj).data as AnyObj).destino) ||
+          ""
+        );
+      }
+      return "";
+    };
+
+    const rowOrigem = (r: AnyObj) =>
+      str(r.origem) ||
+      str((r.itens as AnyObj[] | undefined)?.[0]?.valores && ((r.itens as AnyObj[])[0].valores as AnyObj).origem) ||
+      str((r.itens as AnyObj[] | undefined)?.find((x) => str((x as AnyObj).kind) === "transferencia")?.data && (((r.itens as AnyObj[]).find((x) => str((x as AnyObj).kind) === "transferencia") as AnyObj).data as AnyObj).origem)) ||
+      "";
+
+    // Normaliza totais por linha (aceitando pontosCIA)
+    const normalized = (all || []).map((r) => {
+      const totais = isRecord(r.totais) ? (r.totais as AnyObj) : undefined;
+      const hasPts = num(totais?.totalCIA ?? totais?.pontosCIA) > 0;
+      if (!hasPts) {
+        const totals = smartTotals((r.itens as unknown[]) || [], r.totais);
+        r = {
+          ...r,
+          totais: {
+            totalCIA: totals.totalPts,
+            custoTotal: totals.custoTotal,
+            custoMilheiroTotal: totals.custoMilheiro,
+            lucroTotal: totals.lucroTotal,
+          },
+          totaisId: {
+            totalPts: totals.totalPts,
+            custoTotal: totals.custoTotal,
+            custoMilheiro: totals.custoMilheiro,
+            lucroTotal: totals.lucroTotal,
+          },
+          calculos: {
+            totalPts: totals.totalPts,
+            custoTotal: totals.custoTotal,
+            custoMilheiro: totals.custoMilheiro,
+            lucroTotal: totals.lucroTotal,
+          },
+        } as AnyObj;
+      } else if (totais?.pontosCIA && !totais?.totalCIA) {
+        r = { ...r, totais: { ...totais, totalCIA: num(totais.pontosCIA) } } as AnyObj;
+      }
+      return r;
+    });
+
+    let rows = normalized.slice();
+
+    if (q) {
+      rows = rows.filter(
+        (r) =>
+          str(r.id).toLowerCase().includes(q) ||
+          str(r.cedenteId).toLowerCase().includes(q) ||
+          str(r.cedenteNome).toLowerCase().includes(q)
+      );
+    }
+    if (modoFil) rows = rows.filter((r) => firstModo(r) === modoFil);
+    if (ciaFil) rows = rows.filter((r) => rowCIA(r) === ciaFil);
+    if (origemFil) rows = rows.filter((r) => rowOrigem(r) === origemFil);
+    if (start) rows = rows.filter((r) => str(r.dataCompra) >= start);
+    if (end) rows = rows.filter((r) => str(r.dataCompra) <= end);
+
+    rows.sort((a, b) => {
+      const da = str(a.dataCompra);
+      const db = str(b.dataCompra);
+      if (da < db) return 1;
+      if (da > db) return -1;
+      return str(a.id).localeCompare(str(b.id));
+    });
+
+    const total = rows.length;
+    const offsetClamped = Math.max(0, offset);
+    const limitClamped = Math.max(1, Math.min(limit, 500));
+    const items = rows.slice(offsetClamped, offsetClamped + limitClamped);
+
+    return NextResponse.json({ ok: true, total, items }, { headers: noCache() });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "erro ao carregar";
+    return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCache() });
   }
-  if (modoFil) rows = rows.filter((r) => firstModo(r) === modoFil);
-  if (ciaFil) rows = rows.filter((r) => rowCIA(r) === ciaFil);
-  if (origemFil) rows = rows.filter((r) => rowOrigem(r) === origemFil);
-  if (start) rows = rows.filter((r) => String(r.dataCompra) >= start);
-  if (end) rows = rows.filter((r) => String(r.dataCompra) <= end);
-
-  rows.sort((a: any, b: any) =>
-    a.dataCompra < b.dataCompra
-      ? 1
-      : a.dataCompra > b.dataCompra
-      ? -1
-      : String(a.id).localeCompare(String(b.id))
-  );
-
-  const total = rows.length;
-  const items = rows.slice(offset, offset + limit);
-
-  return NextResponse.json({ ok: true, total, items });
 }
 
 /** ===================== POST (upsert) ===================== */
 export async function POST(req: Request) {
-  const body = await req.json();
+  try {
+    const raw: unknown = await req.json();
+    const body = isRecord(raw) ? (raw as AnyObj) : {};
 
-  const id = String(body.id);
-  const dataCompra = body.dataCompra || "";
-  const statusPontos: Status = body.statusPontos || "aguardando";
-  const cedenteId = body.cedenteId || "";
-  const cedenteNome = body.cedenteNome || "";
+    const id = str(body.id);
+    const dataCompra = str(body.dataCompra);
+    const statusPontos = (str(body.statusPontos) as Status) || "aguardando";
+    const cedenteId = str(body.cedenteId);
+    const cedenteNome = str(body.cedenteNome);
 
-  const { itens, totaisId, totais, compat } = Array.isArray(body.itens)
-    ? normalizeFromNewShape(body)
-    : normalizeFromOldShape(body);
+    const usingNew = Array.isArray(body.itens);
+    const { itens, totaisId, totais, compat } = usingNew
+      ? normalizeFromNewShape(body)
+      : normalizeFromOldShape(body);
 
-  const row = {
-    id,
-    dataCompra,
-    statusPontos,
-    cedenteId,
-    cedenteNome,
+    const row: AnyObj = {
+      id,
+      dataCompra,
+      statusPontos,
+      cedenteId,
+      cedenteNome,
 
-    // novo modelo
-    itens,
-    totais, // salva no novo padrão
+      itens,
+      totais, // novo padrão
 
-    // compat p/ listagem antiga
-    totaisId,
-    modo: compat.modo || undefined,
-    ciaCompra: compat.ciaCompra || undefined,
-    destCia: compat.destCia || undefined,
-    origem: compat.origem || undefined,
-    calculos: { ...totaisId },
+      // compat p/ listagem antiga
+      totaisId,
+      modo: compat.modo ?? undefined,
+      ciaCompra: compat.ciaCompra ?? undefined,
+      destCia: compat.destCia ?? undefined,
+      origem: compat.origem ?? undefined,
+      calculos: { ...totaisId },
 
-    metaMilheiro: body.metaMilheiro ?? undefined,
-    comissaoCedente: body.comissaoCedente ?? undefined,
+      metaMilheiro: body.metaMilheiro ?? undefined,
+      comissaoCedente: body.comissaoCedente ?? undefined,
 
-    savedAt: Date.now(),
-  };
+      savedAt: Date.now(),
+    };
 
-  await upsertCompra(row);
-  return NextResponse.json({ ok: true, id: row.id });
+    await upsertCompra(row);
+    return NextResponse.json({ ok: true, id: row.id }, { headers: noCache() });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "erro ao salvar";
+    return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCache() });
+  }
 }
 
 /** ===================== PATCH (?id=) ===================== */
 export async function PATCH(req: Request) {
   const url = new URL(req.url);
   const id = url.searchParams.get("id");
-  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
-
-  const patch = await req.json().catch(() => ({}));
-  const apply: any = { ...patch };
-
-  // Se vierem itens e não vier `totais`, gere compat/novos; se vier `totais`, gere totaisId/calculos.
-  if (Array.isArray(apply.itens) && !apply.totais && !apply.totaisId) {
-    const smart = smartTotals(apply.itens);
-    apply.totaisId = {
-      totalPts: smart.totalPts,
-      custoTotal: smart.custoTotal,
-      custoMilheiro: smart.custoMilheiro,
-      lucroTotal: smart.lucroTotal,
-    };
-    apply.calculos = { ...apply.totaisId };
-    apply.totais = {
-      totalCIA: smart.totalPts,
-      custoTotal: smart.custoTotal,
-      custoMilheiroTotal: smart.custoMilheiro,
-      lucroTotal: smart.lucroTotal,
-    };
-  }
-  if (apply.totais && !apply.totaisId) {
-    const compatTot = totalsCompatFromTotais(apply.totais);
-    apply.totaisId = { ...compatTot };
-    apply.calculos = { ...compatTot };
-  }
-
-  // Mantém campos compat para a listagem
-  const first = Array.isArray(apply.itens) ? apply.itens[0] : undefined;
-  if (first) {
-    const modo = first.modo || first.kind;
-    apply.modo = modo;
-    if (modo === "compra") {
-      apply.ciaCompra =
-        first?.valores?.ciaCompra ?? first?.data?.programa ?? null;
-      apply.destCia = null;
-      apply.origem = null;
-    } else if (modo === "transferencia") {
-      apply.ciaCompra = null;
-      apply.destCia = first?.valores?.destCia ?? first?.data?.destino ?? null;
-      apply.origem = first?.valores?.origem ?? first?.data?.origem ?? null;
-    }
-  }
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400, headers: noCache() });
 
   try {
+    const patchRaw: unknown = await req.json().catch(() => ({}));
+    const apply: AnyObj = isRecord(patchRaw) ? { ...patchRaw } : {};
+
+    // Se vierem itens e não vier `totais`, gere compat/novos; se vier `totais`, gere totaisId/calculos.
+    if (Array.isArray(apply.itens) && !apply.totais && !apply.totaisId) {
+      const smart = smartTotals(apply.itens as unknown[]);
+      apply.totaisId = {
+        totalPts: smart.totalPts,
+        custoTotal: smart.custoTotal,
+        custoMilheiro: smart.custoMilheiro,
+        lucroTotal: smart.lucroTotal,
+      };
+      apply.calculos = { ...apply.totaisId } as Json;
+      apply.totais = {
+        totalCIA: smart.totalPts,
+        custoTotal: smart.custoTotal,
+        custoMilheiroTotal: smart.custoMilheiro,
+        lucroTotal: smart.lucroTotal,
+      };
+    }
+    if (apply.totais && !apply.totaisId) {
+      const compatTot = totalsCompatFromTotais(apply.totais);
+      apply.totaisId = { ...compatTot };
+      apply.calculos = { ...compatTot };
+    }
+
+    // Mantém campos compat para a listagem
+    const first = Array.isArray(apply.itens) ? (apply.itens as AnyObj[])[0] : undefined;
+    if (first) {
+      const modo = str(first.modo ?? first.kind);
+      apply.modo = modo;
+      if (modo === "compra") {
+        apply.ciaCompra = str(
+          (first.valores as AnyObj | undefined)?.ciaCompra ??
+            (first.data as AnyObj | undefined)?.programa ??
+            null
+        );
+        apply.destCia = null;
+        apply.origem = null;
+      } else if (modo === "transferencia") {
+        apply.ciaCompra = null;
+        apply.destCia = str(
+          (first.valores as AnyObj | undefined)?.destCia ??
+            (first.data as AnyObj | undefined)?.destino ??
+            null
+        );
+        apply.origem = str(
+          (first.valores as AnyObj | undefined)?.origem ??
+            (first.data as AnyObj | undefined)?.origem ??
+            null
+        );
+      }
+    }
+
     const updated = await updateCompraById(id, apply);
-    return NextResponse.json(updated);
-  } catch (e: any) {
-    const msg = e?.message || "Erro ao atualizar";
+    return NextResponse.json(updated, { headers: noCache() });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Erro ao atualizar";
     const code = /não encontrado/i.test(msg) ? 404 : 500;
-    return NextResponse.json({ error: msg }, { status: code });
+    return NextResponse.json({ error: msg }, { status: code, headers: noCache() });
   }
 }
 
@@ -461,14 +557,14 @@ export async function PATCH(req: Request) {
 export async function DELETE(req: Request) {
   const url = new URL(req.url);
   const id = url.searchParams.get("id");
-  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400, headers: noCache() });
 
   try {
     await deleteCompraById(id);
-    return NextResponse.json({ ok: true, deleted: id });
-  } catch (e: any) {
-    const msg = e?.message || "Erro ao excluir";
+    return NextResponse.json({ ok: true, deleted: id }, { headers: noCache() });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Erro ao excluir";
     const code = /não encontrado/i.test(msg) ? 404 : 500;
-    return NextResponse.json({ error: msg }, { status: code });
+    return NextResponse.json({ error: msg }, { status: code, headers: noCache() });
   }
 }

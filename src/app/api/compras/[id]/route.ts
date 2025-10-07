@@ -1,43 +1,62 @@
 // src/app/api/compras/[id]/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import {
   findCompraById,
-  deleteCompraById,
-  // adicione esta função no seu comprasRepo (exemplo abaixo)
   updateCompraById,
+  deleteCompraById,
 } from "@/lib/comprasRepo";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 type StatusPontos = "aguardando" | "liberados";
 
+function noCache() {
+  return {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+    "Surrogate-Control": "no-store",
+  };
+}
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
 /** GET /api/compras/:id */
-export async function GET(_req: Request, { params }: { params: { id: string } }) {
+export async function GET(
+  _req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
   try {
-    const item = await findCompraById(params.id);
-    if (!item) return NextResponse.json({ error: "Não encontrado" }, { status: 404 });
-    return NextResponse.json(item);
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Erro ao buscar" }, { status: 500 });
+    const { id } = await context.params;
+    const item = await findCompraById(id.trim());
+    if (!item) return NextResponse.json({ error: "Não encontrado" }, { status: 404, headers: noCache() });
+    return NextResponse.json(item, { headers: noCache() });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Erro ao buscar";
+    return NextResponse.json({ error: msg }, { status: 500, headers: noCache() });
   }
 }
 
-/** PATCH /api/compras/:id
- *  Atualização parcial. Exemplos de body:
- *   { "statusPontos": "liberados" }
- *   { "dataCompra": "2025-09-23", "cedenteId": "ABC" }
- *   { "itens": [...], "totaisId": {...} }
- */
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+/** PATCH /api/compras/:id */
+export async function PATCH(
+  req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
   try {
-    const body = await req.json();
-    if (!body || typeof body !== "object") {
-      return NextResponse.json({ error: "Body inválido" }, { status: 400 });
+    const { id } = await context.params;
+    const body = await req.json().catch(() => null);
+    if (!isObject(body)) {
+      return NextResponse.json({ error: "Body inválido" }, { status: 400, headers: noCache() });
     }
 
-    // Sanitização: só deixa passar campos conhecidos
-    const allowedKeys = new Set([
-      "statusPontos", // "aguardando" | "liberados"
+    const allowed = new Set([
+      "statusPontos",
       "dataCompra",
       "cedenteId",
+      "cedenteNome",
       "modo",
       "ciaCompra",
       "destCia",
@@ -46,37 +65,46 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       "calculos",
       "itens",
       "totaisId",
+      "totais",
+      "metaMilheiro",
+      "comissaoCedente",
       "savedAt",
     ]);
 
-    const patch: Record<string, any> = {};
-    for (const [k, v] of Object.entries(body)) {
-      if (allowedKeys.has(k)) patch[k] = v;
-    }
+    const patch: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(body)) if (allowed.has(k)) patch[k] = v;
 
-    // Validação simples de status
     if ("statusPontos" in patch) {
       const s = String(patch.statusPontos) as StatusPontos;
       if (s !== "aguardando" && s !== "liberados") {
-        return NextResponse.json({ error: "statusPontos inválido" }, { status: 400 });
+        return NextResponse.json(
+          { error: "statusPontos inválido (use 'aguardando' ou 'liberados')" },
+          { status: 400, headers: noCache() }
+        );
       }
     }
 
-    const updated = await updateCompraById(params.id, patch);
-    if (!updated) return NextResponse.json({ error: "Não encontrado" }, { status: 404 });
+    const updated = await updateCompraById(id.trim(), patch);
+    if (!updated) return NextResponse.json({ error: "Não encontrado" }, { status: 404, headers: noCache() });
 
-    return NextResponse.json({ ok: true, id: params.id, data: updated });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Erro ao atualizar" }, { status: 500 });
+    return NextResponse.json({ ok: true, id: id.trim(), data: updated }, { headers: noCache() });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Erro ao atualizar";
+    return NextResponse.json({ error: msg }, { status: 500, headers: noCache() });
   }
 }
 
 /** DELETE /api/compras/:id */
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(
+  _req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
   try {
-    await deleteCompraById(params.id);
-    return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Erro ao excluir" }, { status: 500 });
+    const { id } = await context.params;
+    await deleteCompraById(id.trim());
+    return NextResponse.json({ ok: true }, { headers: noCache() });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Erro ao excluir";
+    return NextResponse.json({ error: msg }, { status: 500, headers: noCache() });
   }
 }

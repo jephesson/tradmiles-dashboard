@@ -1,16 +1,21 @@
+// src/app/api/finalizacoes/route.ts
 import { NextResponse } from "next/server";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 
-/** ===============================
- * Chave no localStorage (ou DB)
- * =============================== */
-const KEY = "TM_FINALIZACOES";
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-/** ===============================
- * Tipos
- * =============================== */
+/* ============ Persistência (filesystem) ============ */
+// Em produção (Vercel) só /tmp é gravável; local: ./data
+const ROOT_DIR = process.env.VERCEL ? "/tmp" : process.cwd();
+const DATA_DIR = path.join(ROOT_DIR, "data");
+const DATA_FILE = path.join(DATA_DIR, "finalizacoes.json");
+
 type FinalizacaoRec = {
   id: string;
-  data: string; // ISO yyyy-mm-dd
+  data: string; // yyyy-mm-dd
   compraId?: string | null;
   contaId?: string | null;
   ownerFuncionarioId?: string | null;
@@ -20,26 +25,34 @@ type FinalizacaoRec = {
   updatedAt?: string;
 };
 
-/** ===============================
- * Funções utilitárias
- * =============================== */
-function loadAll(): FinalizacaoRec[] {
-  if (typeof localStorage === "undefined") return [];
+function noCache() {
+  return {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+    "Surrogate-Control": "no-store",
+  };
+}
+
+async function ensureDir() {
+  try { await fs.mkdir(DATA_DIR, { recursive: true }); } catch {}
+}
+
+async function loadAll(): Promise<FinalizacaoRec[]> {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
+    const buf = await fs.readFile(DATA_FILE, "utf-8");
+    const arr = JSON.parse(buf);
     return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return [];
+    throw e;
   }
 }
 
-function saveAll(list: FinalizacaoRec[]) {
-  if (typeof localStorage === "undefined") return;
-  try {
-    localStorage.setItem(KEY, JSON.stringify(list));
-  } catch {}
+async function saveAll(list: FinalizacaoRec[]) {
+  await ensureDir();
+  await fs.writeFile(DATA_FILE, JSON.stringify(list, null, 2), "utf-8");
 }
 
 function genId() {
@@ -49,101 +62,140 @@ function genId() {
   return `FIN-${iso}-${rnd}`;
 }
 
-/** ===============================
- * GET /api/finalizacoes
- * =============================== */
+function toNum(v: unknown) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/* ============ GET /api/finalizacoes ============ */
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const id = searchParams.get("id");
-  const limit = Number(searchParams.get("limit") || "2000");
+  try {
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get("id");
+    const limit = Number(searchParams.get("limit") || "2000");
 
-  let list = loadAll();
-  if (id) {
-    const found = list.find((x) => x.id === id);
-    if (!found) return NextResponse.json({ error: "Não encontrada" }, { status: 404 });
-    return NextResponse.json(found);
+    let list = await loadAll();
+
+    if (id) {
+      const found = list.find((x) => x.id === id);
+      if (!found) {
+        return NextResponse.json({ error: "Não encontrada" }, { status: 404, headers: noCache() });
+      }
+      return NextResponse.json(found, { headers: noCache() });
+    }
+
+    const start = searchParams.get("start");
+    const end = searchParams.get("end");
+    if (start) list = list.filter((x) => x.data >= start);
+    if (end) list = list.filter((x) => x.data <= end);
+
+    list.sort((a, b) => {
+      // data desc, depois createdAt desc
+      const d = b.data.localeCompare(a.data);
+      if (d !== 0) return d;
+      return (b.createdAt || "").localeCompare(a.createdAt || "");
+    });
+
+    return NextResponse.json(
+      { items: list.slice(0, Math.max(1, limit)), total: list.length },
+      { headers: noCache() }
+    );
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message || "Erro ao carregar" },
+      { status: 500, headers: noCache() }
+    );
   }
-
-  // filtros simples por data (se quiser)
-  const start = searchParams.get("start");
-  const end = searchParams.get("end");
-  if (start) list = list.filter((x) => x.data >= start);
-  if (end) list = list.filter((x) => x.data <= end);
-
-  // ordena mais recentes primeiro
-  list.sort((a, b) => b.data.localeCompare(a.data));
-
-  return NextResponse.json({
-    items: list.slice(0, limit),
-    total: list.length,
-  });
 }
 
-/** ===============================
- * POST /api/finalizacoes
- * =============================== */
+/* ============ POST /api/finalizacoes ============ */
 export async function POST(req: Request) {
-  const body = await req.json();
-  const list = loadAll();
+  try {
+    const body = await req.json();
+    const list = await loadAll();
 
-  const now = new Date().toISOString();
-  const rec: FinalizacaoRec = {
-    id: genId(),
-    data: body.data || now.slice(0, 10),
-    compraId: body.compraId ?? null,
-    contaId: body.contaId ?? null,
-    ownerFuncionarioId: body.ownerFuncionarioId ?? null,
-    lucroFinalizacao: Number(body.lucroFinalizacao || 0),
-    observacao: body.observacao || "",
-    createdAt: now,
-    updatedAt: now,
-  };
+    const nowIso = new Date().toISOString();
+    const rec: FinalizacaoRec = {
+      id: genId(),
+      data: String(body?.data || nowIso.slice(0, 10)),
+      compraId: body?.compraId ?? null,
+      contaId: body?.contaId ?? null,
+      ownerFuncionarioId: body?.ownerFuncionarioId ?? null,
+      lucroFinalizacao: toNum(body?.lucroFinalizacao),
+      observacao: String(body?.observacao || ""),
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
 
-  list.push(rec);
-  saveAll(list);
+    list.push(rec);
+    await saveAll(list);
 
-  return NextResponse.json(rec);
+    return NextResponse.json(rec, { status: 201, headers: noCache() });
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message || "Erro ao salvar" },
+      { status: 500, headers: noCache() }
+    );
+  }
 }
 
-/** ===============================
- * PATCH /api/finalizacoes?id=XXX
- * =============================== */
+/* ============ PATCH /api/finalizacoes?id=XXX ============ */
 export async function PATCH(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const id = searchParams.get("id");
-  if (!id) return NextResponse.json({ error: "ID ausente" }, { status: 400 });
+  try {
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get("id");
+    if (!id) return NextResponse.json({ error: "ID ausente" }, { status: 400, headers: noCache() });
 
-  const body = await req.json();
-  const list = loadAll();
-  const idx = list.findIndex((x) => x.id === id);
-  if (idx === -1)
-    return NextResponse.json({ error: "Finalização não encontrada" }, { status: 404 });
+    const body = await req.json();
+    const list = await loadAll();
+    const idx = list.findIndex((x) => x.id === id);
+    if (idx === -1)
+      return NextResponse.json({ error: "Finalização não encontrada" }, { status: 404, headers: noCache() });
 
-  const updated = {
-    ...list[idx],
-    ...body,
-    updatedAt: new Date().toISOString(),
-  };
-  list[idx] = updated;
-  saveAll(list);
+    const curr = list[idx];
+    const updated: FinalizacaoRec = {
+      ...curr,
+      data: body?.data ? String(body.data) : curr.data,
+      compraId: body?.compraId ?? curr.compraId,
+      contaId: body?.contaId ?? curr.contaId,
+      ownerFuncionarioId: body?.ownerFuncionarioId ?? curr.ownerFuncionarioId,
+      lucroFinalizacao:
+        typeof body?.lucroFinalizacao !== "undefined" ? toNum(body.lucroFinalizacao) : curr.lucroFinalizacao,
+      observacao: typeof body?.observacao === "string" ? body.observacao : curr.observacao,
+      updatedAt: new Date().toISOString(),
+    };
 
-  return NextResponse.json(updated);
+    list[idx] = updated;
+    await saveAll(list);
+
+    return NextResponse.json(updated, { headers: noCache() });
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message || "Erro ao atualizar" },
+      { status: 500, headers: noCache() }
+    );
+  }
 }
 
-/** ===============================
- * DELETE /api/finalizacoes?id=XXX
- * =============================== */
+/* ============ DELETE /api/finalizacoes?id=XXX ============ */
 export async function DELETE(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const id = searchParams.get("id");
-  if (!id) return NextResponse.json({ error: "ID ausente" }, { status: 400 });
+  try {
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get("id");
+    if (!id) return NextResponse.json({ error: "ID ausente" }, { status: 400, headers: noCache() });
 
-  let list = loadAll();
-  const before = list.length;
-  list = list.filter((x) => x.id !== id);
-  if (list.length === before)
-    return NextResponse.json({ error: "Finalização não encontrada" }, { status: 404 });
+    const list = await loadAll();
+    const next = list.filter((x) => x.id !== id);
+    if (next.length === list.length) {
+      return NextResponse.json({ error: "Finalização não encontrada" }, { status: 404, headers: noCache() });
+    }
 
-  saveAll(list);
-  return NextResponse.json({ ok: true });
+    await saveAll(next);
+    return NextResponse.json({ ok: true }, { headers: noCache() });
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message || "Erro ao excluir" },
+      { status: 500, headers: noCache() }
+    );
+  }
 }
