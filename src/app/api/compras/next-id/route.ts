@@ -1,20 +1,33 @@
 // src/app/api/compras/next-id/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { nextShortId } from "@/lib/comprasRepo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-export async function GET(
-  _req: NextRequest,
-  _ctx: { params: Promise<Record<string, never>> } // mantém assinatura compatível com Next 15
-) {
+function noCache() {
+  return {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+    "Surrogate-Control": "no-store",
+  };
+}
+
+export async function GET(): Promise<NextResponse> {
   try {
-    const next = await nextShortId();
-    return NextResponse.json({ ok: true, nextId: next, data: { nextId: next } });
+    const nextId = await nextShortId();
+    return NextResponse.json(
+      { ok: true, nextId, data: { nextId } },
+      { headers: noCache() }
+    );
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Erro ao calcular próximo ID";
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: msg },
+      { status: 500, headers: noCache() }
+    );
   }
 }
