@@ -1,3 +1,4 @@
+// prisma/schema.prisma
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL") // pooler
@@ -6,4 +7,36 @@ datasource db {
 
 generator client {
   provider = "prisma-client-js"
+}
+
+enum Role {
+  admin
+  staff
+}
+
+model User {
+  id           String   @id @default(cuid())
+  login        String   @unique
+  name         String
+  email        String?
+  team         String
+  role         Role     @default(staff)
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Comissao {
+  id           String   @id @default(cuid())
+  compraId     String
+  cedenteId    String
+  cedenteNome  String
+  valor        Decimal  @db.Decimal(10, 2) // Postgres decimal(10,2)
+  status       String   // "pago" | "aguardando"
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  @@unique([compraId, cedenteId], name: "compraId_cedenteId")
+  @@index([status])
+  @@index([cedenteId])
 }
