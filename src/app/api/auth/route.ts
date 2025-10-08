@@ -2,11 +2,13 @@
 import { NextResponse } from "next/server";
 import crypto from "node:crypto";
 import { prisma } from "@/lib/db";
-import { Role } from "@prisma/client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
+
+// Tipos locais para não depender do @prisma/client durante o build
+type Role = "admin" | "staff";
 
 const TEAM = "@vias_aereas";
 const sha256 = (s: string) => crypto.createHash("sha256").update(s).digest("hex");
@@ -34,10 +36,34 @@ const SEED_USERS: Array<{
   role: Role;
   password: string;
 }> = [
-  { login: "jephesson", name: "Jephesson Alex Floriano dos Santos", email: "jephesson@gmail.com", role: Role.admin, password: "ufpb2010" },
-  { login: "lucas",     name: "Lucas Henrique Floriano de Araújo",  email: "luucasaraujo97@gmail.com", role: Role.staff,  password: "1234" },
-  { login: "paola",     name: "Paola Rampelotto Ziani",             email: "paolaziani5@gmail.com",    role: Role.staff,  password: "1234" },
-  { login: "eduarda",   name: "Eduarda Vargas de Freitas",          email: "eduarda.jeph@gmail.com",   role: Role.staff,  password: "1234" },
+  {
+    login: "jephesson",
+    name: "Jephesson Alex Floriano dos Santos",
+    email: "jephesson@gmail.com",
+    role: "admin",
+    password: "ufpb2010",
+  },
+  {
+    login: "lucas",
+    name: "Lucas Henrique Floriano de Araújo",
+    email: "luucasaraujo97@gmail.com",
+    role: "staff",
+    password: "1234",
+  },
+  {
+    login: "paola",
+    name: "Paola Rampelotto Ziani",
+    email: "paolaziani5@gmail.com",
+    role: "staff",
+    password: "1234",
+  },
+  {
+    login: "eduarda",
+    name: "Eduarda Vargas de Freitas",
+    email: "eduarda.jeph@gmail.com",
+    role: "staff",
+    password: "1234",
+  },
 ];
 
 function noCache() {
@@ -74,7 +100,10 @@ export async function POST(req: Request) {
   try {
     const raw = await req.json().catch(() => null);
     if (!isApiBody(raw)) {
-      return NextResponse.json({ ok: false, error: "ação inválida" }, { status: 400, headers: noCache() });
+      return NextResponse.json(
+        { ok: false, error: "ação inválida" },
+        { status: 400, headers: noCache() }
+      );
     }
 
     // ===== LOGIN =====
@@ -82,15 +111,24 @@ export async function POST(req: Request) {
       const login = norm(raw.login);
       const password = String(raw.password ?? "");
       if (!login || !password) {
-        return NextResponse.json({ ok: false, error: "dados inválidos" }, { status: 400, headers: noCache() });
+        return NextResponse.json(
+          { ok: false, error: "dados inválidos" },
+          { status: 400, headers: noCache() }
+        );
       }
 
       const user = await prisma.user.findUnique({ where: { login } });
       if (!user) {
-        return NextResponse.json({ ok: false, error: "usuário não encontrado" }, { status: 401, headers: noCache() });
+        return NextResponse.json(
+          { ok: false, error: "usuário não encontrado" },
+          { status: 401, headers: noCache() }
+        );
       }
       if (user.passwordHash !== sha256(password)) {
-        return NextResponse.json({ ok: false, error: "senha inválida" }, { status: 401, headers: noCache() });
+        return NextResponse.json(
+          { ok: false, error: "senha inválida" },
+          { status: 401, headers: noCache() }
+        );
       }
 
       const session: Session = {
@@ -99,7 +137,7 @@ export async function POST(req: Request) {
         login: user.login,
         email: user.email ?? null,
         team: user.team,
-        role: user.role,
+        role: user.role as Role, // banco armazena o mesmo enum
       };
 
       const res = NextResponse.json({ ok: true, data: { session } }, { headers: noCache() });
@@ -112,12 +150,18 @@ export async function POST(req: Request) {
       const login = norm(raw.login);
       const password = String(raw.password ?? "");
       if (!login || !password) {
-        return NextResponse.json({ ok: false, error: "dados inválidos" }, { status: 400, headers: noCache() });
+        return NextResponse.json(
+          { ok: false, error: "dados inválidos" },
+          { status: 400, headers: noCache() }
+        );
       }
 
       const exists = await prisma.user.findUnique({ where: { login } });
       if (!exists) {
-        return NextResponse.json({ ok: false, error: "usuário não encontrado" }, { status: 404, headers: noCache() });
+        return NextResponse.json(
+          { ok: false, error: "usuário não encontrado" },
+          { status: 404, headers: noCache() }
+        );
       }
 
       await prisma.user.update({
@@ -162,7 +206,10 @@ export async function POST(req: Request) {
       return res;
     }
 
-    return NextResponse.json({ ok: false, error: "ação inválida" }, { status: 400, headers: noCache() });
+    return NextResponse.json(
+      { ok: false, error: "ação inválida" },
+      { status: 400, headers: noCache() }
+    );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "erro ao processar";
     return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCache() });
