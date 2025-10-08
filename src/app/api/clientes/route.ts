@@ -1,4 +1,4 @@
-// app/api/clientes/route.ts  (ou src/app/api/clientes/route.ts)
+// src/app/api/clientes/route.ts
 import { NextResponse } from "next/server";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -23,7 +23,7 @@ type Json =
   | { [k: string]: Json };
 
 type Payload = {
-  savedAt: string;
+  savedAt: string | null;
   lista: Json[];
 };
 
@@ -88,7 +88,8 @@ export async function GET() {
 
     if (isRecord(parsed) && "savedAt" in parsed && "lista" in parsed && Array.isArray((parsed as any).lista)) {
       const out: Payload = {
-        savedAt: String((parsed as Record<string, Json>).savedAt ?? new Date().toISOString()),
+        savedAt:
+          typeof (parsed as any).savedAt === "string" ? (parsed as any).savedAt : null,
         lista: (parsed as { lista: Json[] }).lista,
       };
       return new NextResponse(JSON.stringify({ ok: true, data: out }), {
@@ -98,7 +99,8 @@ export async function GET() {
     }
 
     const lista = pickLista(parsed);
-    const savedAt = isRecord(parsed) && typeof parsed.savedAt === "string" ? parsed.savedAt : null;
+    const savedAt =
+      isRecord(parsed) && typeof parsed.savedAt === "string" ? parsed.savedAt : null;
 
     return new NextResponse(JSON.stringify({ ok: true, data: { savedAt, lista } }), {
       status: 200,
@@ -127,9 +129,13 @@ export async function POST(req: Request) {
     if (Array.isArray(body)) {
       lista = body as Json[];
     } else if (isRecord(body)) {
-      const direct =
-        (Array.isArray(body.lista) && (body.lista as Json[])) ||
-        (Array.isArray(body.items) && (body.items as Json[]));
+      // ternários para evitar boolean em `direct`
+      const direct = Array.isArray(body.lista)
+        ? (body.lista as Json[])
+        : Array.isArray(body.items)
+        ? (body.items as Json[])
+        : undefined;
+
       lista = direct ?? pickLista(body);
     }
 
