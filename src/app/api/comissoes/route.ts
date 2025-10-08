@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-function noCache() {
+function noCache(): Record<string, string> {
   return {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
@@ -19,8 +19,8 @@ function noCache() {
 
 type Status = "pago" | "aguardando";
 
-/* ================= GET ================= */
-export async function GET(req: Request) {
+/* ============== GET ============== */
+export async function GET(req: Request): Promise<NextResponse> {
   try {
     const { searchParams } = new URL(req.url);
     const q = (searchParams.get("q") || "").trim();
@@ -51,7 +51,7 @@ export async function GET(req: Request) {
   }
 }
 
-/* ================= POST =================
+/* ============== POST ==============
 Body aceito:
 {
   "compraId": string,
@@ -61,7 +61,7 @@ Body aceito:
   "status"?: "pago" | "aguardando"
 }
 Salva/upserta pela única (compraId, cedenteId)
-========================================== */
+==================================== */
 type PostBody = {
   compraId: string;
   cedenteId: string;
@@ -71,7 +71,6 @@ type PostBody = {
 };
 
 function toDecimal(v: unknown): Prisma.Decimal {
-  // Prisma aceita number | string | Decimal; normalizamos com segurança
   if (typeof v === "number" && Number.isFinite(v)) return new Prisma.Decimal(v);
   if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) {
     return new Prisma.Decimal(v);
@@ -79,10 +78,10 @@ function toDecimal(v: unknown): Prisma.Decimal {
   return new Prisma.Decimal(0);
 }
 
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<NextResponse> {
   try {
-    const raw = (await req.json()) as unknown;
-    const body = raw as Partial<PostBody>;
+    const raw: unknown = await req.json();
+    const body: Partial<PostBody> = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<PostBody>;
 
     const compraId = String(body.compraId ?? "").trim();
     const cedenteId = String(body.cedenteId ?? "").trim();
@@ -95,13 +94,13 @@ export async function POST(req: Request) {
 
     const cedenteNome = (body.cedenteNome ?? "") || "";
     const valor = toDecimal(body.valor);
-    const status: Status = (body.status === "pago" ? "pago" : "aguardando");
+    const status: Status = body.status === "pago" ? "pago" : "aguardando";
 
     const data = await prisma.comissao.upsert({
       where: { compraId_cedenteId: { compraId, cedenteId } },
       update: {
         cedenteNome,
-        valor,           // Decimal
+        valor, // Decimal
         status,
         atualizadoEm: new Date(),
       },
@@ -109,7 +108,7 @@ export async function POST(req: Request) {
         compraId,
         cedenteId,
         cedenteNome,
-        valor,           // Decimal
+        valor, // Decimal
         status,
       },
     });

@@ -21,7 +21,7 @@ type Payload = {
   lista: Json[]; // os itens podem ser objetos ou valores simples
 };
 
-function isRecord(v: unknown): v is Record<string, Json> {
+function isRecord(v: unknown): v is Record<string, Json | unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
@@ -53,13 +53,14 @@ function pickLista(payload: unknown): Json[] {
 
   const candidates: unknown[] = [
     p.lista,
-    p.listaBloqueios,
-    p.bloqueios,
-    p.items,
-    isRecord(p.data) ? p.data.lista : undefined,
-    isRecord(p.data) ? p.data.listaBloqueios : undefined,
-    isRecord(p.data) ? p.data.bloqueios : undefined,
-    isRecord(p.data) ? p.data.items : undefined,
+    // variações de nomes:
+    (p as Record<string, unknown>).listaBloqueios,
+    (p as Record<string, unknown>).bloqueios,
+    (p as Record<string, unknown>).items,
+    isRecord((p as Record<string, unknown>).data) ? (p as { data: unknown }).data && (p as { data: { lista?: unknown } }).data.lista : undefined,
+    isRecord((p as Record<string, unknown>).data) ? (p as { data: { listaBloqueios?: unknown } }).data.listaBloqueios : undefined,
+    isRecord((p as Record<string, unknown>).data) ? (p as { data: { bloqueios?: unknown } }).data.bloqueios : undefined,
+    isRecord((p as Record<string, unknown>).data) ? (p as { data: { items?: unknown } }).data.items : undefined,
   ];
 
   for (const c of candidates) {
@@ -69,7 +70,7 @@ function pickLista(payload: unknown): Json[] {
 }
 
 /* ================ GET ================ */
-export async function GET() {
+export async function GET(): Promise<NextResponse> {
   try {
     await ensureDir();
 
@@ -85,32 +86,33 @@ export async function GET() {
     }
 
     // Se já estiver salvo no formato normalizado { savedAt, lista }, mantenha.
-    if (isRecord(parsed) && "savedAt" in parsed && "lista" in parsed && Array.isArray((parsed as any).lista)) {
+    if (
+      isRecord(parsed) &&
+      "savedAt" in parsed &&
+      "lista" in parsed &&
+      Array.isArray((parsed as { lista?: unknown }).lista)
+    ) {
+      const savedAtRaw = (parsed as { savedAt?: unknown }).savedAt;
+      const listaRaw = (parsed as { lista?: unknown }).lista;
       const out: Payload = {
-        savedAt: String((parsed as Record<string, Json>).savedAt ?? new Date().toISOString()),
-        lista: (parsed as { lista: Json[] }).lista,
+        savedAt: typeof savedAtRaw === "string" ? savedAtRaw : new Date().toISOString(),
+        lista: (listaRaw as Json[]) ?? [],
       };
-      return new NextResponse(JSON.stringify({ ok: true, data: out }), {
-        status: 200,
-        headers: noCacheHeaders(),
-      });
+      return NextResponse.json({ ok: true, data: out }, { status: 200, headers: noCacheHeaders() });
     }
 
     // Caso contrário, tente extrair pelos formatos alternativos
     const lista = pickLista(parsed);
-    const savedAt = isRecord(parsed) && typeof parsed.savedAt === "string" ? parsed.savedAt : null;
+    const savedAt =
+      isRecord(parsed) && typeof (parsed as { savedAt?: unknown }).savedAt === "string"
+        ? (parsed as { savedAt: string }).savedAt
+        : new Date().toISOString();
 
-    return new NextResponse(JSON.stringify({ ok: true, data: { savedAt, lista } }), {
-      status: 200,
-      headers: noCacheHeaders(),
-    });
+    return NextResponse.json({ ok: true, data: { savedAt, lista } }, { status: 200, headers: noCacheHeaders() });
   } catch (e) {
     const msg =
       typeof e === "object" && e && "message" in e ? String((e as { message?: unknown }).message) : "erro ao carregar";
-    return new NextResponse(JSON.stringify({ ok: false, error: msg }), {
-      status: 500,
-      headers: noCacheHeaders(),
-    });
+    return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCacheHeaders() });
   }
 }
 
@@ -123,7 +125,7 @@ Aceita:
 - [ ... ]                   (array puro)
 Salva normalizado como { savedAt, lista }.
 ======================================= */
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<NextResponse> {
   try {
     const body: unknown = await req.json();
 
@@ -133,11 +135,15 @@ export async function POST(req: Request) {
     } else if (isRecord(body)) {
       // use ternários para nunca gerar boolean
       const direct =
-        Array.isArray(body.lista) ? (body.lista as Json[]) :
-        Array.isArray(body.listaBloqueios) ? (body.listaBloqueios as Json[]) :
-        Array.isArray(body.bloqueios) ? (body.bloqueios as Json[]) :
-        Array.isArray(body.items) ? (body.items as Json[]) :
-        undefined;
+        Array.isArray((body as { lista?: unknown }).lista)
+          ? ((body as { lista: Json[] }).lista)
+          : Array.isArray((body as { listaBloqueios?: unknown }).listaBloqueios)
+          ? ((body as { listaBloqueios: Json[] }).listaBloqueios)
+          : Array.isArray((body as { bloqueios?: unknown }).bloqueios)
+          ? ((body as { bloqueios: Json[] }).bloqueios)
+          : Array.isArray((body as { items?: unknown }).items)
+          ? ((body as { items: Json[] }).items)
+          : undefined;
 
       lista = direct ?? pickLista(body);
     }
@@ -150,16 +156,10 @@ export async function POST(req: Request) {
     await ensureDir();
     await fs.writeFile(DATA_FILE, JSON.stringify(payload, null, 2), "utf-8");
 
-    return new NextResponse(JSON.stringify({ ok: true, data: payload }), {
-      status: 200,
-      headers: noCacheHeaders(),
-    });
+    return NextResponse.json({ ok: true, data: payload }, { status: 200, headers: noCacheHeaders() });
   } catch (e) {
     const msg =
       typeof e === "object" && e && "message" in e ? String((e as { message?: unknown }).message) : "erro ao salvar";
-    return new NextResponse(JSON.stringify({ ok: false, error: msg }), {
-      status: 500,
-      headers: noCacheHeaders(),
-    });
+    return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCacheHeaders() });
   }
 }

@@ -12,7 +12,7 @@ type Role = "admin" | "staff";
 
 const TEAM = "@vias_aereas";
 const sha256 = (s: string) => crypto.createHash("sha256").update(s).digest("hex");
-const norm = (s: string) => (s ?? "").trim().toLowerCase();
+const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase();
 
 type Session = {
   id: string;
@@ -77,6 +77,7 @@ function noCache() {
 }
 
 function setSessionCookie(res: NextResponse, session: Session) {
+  // mantém seu formato atual (URL-encoded JSON) e configurações seguras em prod
   res.cookies.set("tm.session", encodeURIComponent(JSON.stringify(session)), {
     httpOnly: true,
     sameSite: "lax",
@@ -88,15 +89,15 @@ function setSessionCookie(res: NextResponse, session: Session) {
 
 function isApiBody(v: unknown): v is ApiBody {
   if (!v || typeof v !== "object") return false;
-  const a = (v as { action?: string }).action;
-  return a === "login" || a === "setPassword" || a === "resetSeed" || a === "logout";
+  const action = (v as { action?: string }).action;
+  return action === "login" || action === "setPassword" || action === "resetSeed" || action === "logout";
 }
 
-export async function GET() {
+export async function GET(): Promise<NextResponse> {
   return NextResponse.json({ ok: true }, { headers: noCache() });
 }
 
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<NextResponse> {
   try {
     const raw = await req.json().catch(() => null);
     if (!isApiBody(raw)) {
@@ -115,7 +116,7 @@ export async function POST(req: Request) {
           { ok: false, error: "dados inválidos" },
           { status: 400, headers: noCache() }
         );
-      }
+        }
 
       const user = await prisma.user.findUnique({ where: { login } });
       if (!user) {
@@ -137,7 +138,7 @@ export async function POST(req: Request) {
         login: user.login,
         email: user.email ?? null,
         team: user.team,
-        role: user.role as Role, // banco armazena o mesmo enum
+        role: user.role as Role, // prisma enum compatível
       };
 
       const res = NextResponse.json({ ok: true, data: { session } }, { headers: noCache() });
@@ -193,8 +194,8 @@ export async function POST(req: Request) {
               role: u.role,
               passwordHash: sha256(u.password),
             },
-          })
-        )
+          }),
+        ),
       );
       return NextResponse.json({ ok: true }, { headers: noCache() });
     }
@@ -210,7 +211,7 @@ export async function POST(req: Request) {
       { ok: false, error: "ação inválida" },
       { status: 400, headers: noCache() }
     );
-  } catch (err: unknown) {
+  } catch (err) {
     const msg = err instanceof Error ? err.message : "erro ao processar";
     return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCache() });
   }

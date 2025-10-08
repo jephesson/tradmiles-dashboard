@@ -2,7 +2,7 @@
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL") // pooler
-  directUrl = env("DIRECT_URL")   // direto (migrações/seed)
+  directUrl = env("DIRECT_URL") // direto (migrações/seed)
 }
 
 generator client {
@@ -32,7 +32,7 @@ model Comissao {
   cedenteId    String
   cedenteNome  String
   valor        Decimal  @db.Decimal(10, 2) // Postgres decimal(10,2)
-  status       String   // "pago" | "aguardando"
+  status       String // "pago" | "aguardando"
   criadoEm     DateTime @default(now())
   atualizadoEm DateTime @updatedAt
 

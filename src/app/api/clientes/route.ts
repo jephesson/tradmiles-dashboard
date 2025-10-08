@@ -14,21 +14,18 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
 const DATA_FILE = path.join(DATA_DIR, "clientes.json");
 
 /* ---------------- Tipos ---------------- */
-type Json =
-  | string
-  | number
-  | boolean
-  | null
-  | Json[]
-  | { [k: string]: Json };
+type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 
 type Payload = {
   savedAt: string | null;
   lista: Json[];
 };
 
-function isRecord(v: unknown): v is Record<string, Json> {
+function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function hasCode(e: unknown): e is { code: string } {
+  return typeof e === "object" && e !== null && "code" in e && typeof (e as { code?: unknown }).code === "string";
 }
 
 /** Cabeçalhos pra desabilitar cache no browser/CDN */
@@ -53,15 +50,14 @@ async function ensureDir() {
 /** Aceita vários formatos de entrada e devolve sempre um array */
 function pickLista(payload: unknown): Json[] {
   if (Array.isArray(payload)) return payload as Json[];
+  if (!isRecord(payload)) return [];
 
-  const p = isRecord(payload) ? payload : null;
-  if (!p) return [];
-
+  const rec = payload as Record<string, unknown>;
   const candidates: unknown[] = [
-    p.lista,
-    p.items,
-    isRecord(p.data) ? p.data.lista : undefined,
-    isRecord(p.data) ? p.data.items : undefined,
+    rec.lista,
+    rec.items,
+    isRecord(rec.data) ? (rec.data as Record<string, unknown>).lista : undefined,
+    isRecord(rec.data) ? (rec.data as Record<string, unknown>).items : undefined,
   ];
 
   for (const c of candidates) {
@@ -71,7 +67,7 @@ function pickLista(payload: unknown): Json[] {
 }
 
 /* =============== GET =============== */
-export async function GET() {
+export async function GET(): Promise<NextResponse> {
   try {
     await ensureDir();
 
@@ -81,26 +77,38 @@ export async function GET() {
       parsed = JSON.parse(buf.toString("utf-8"));
     } catch (e) {
       // arquivo ainda não existe
-      if (!(typeof e === "object" && e && "code" in e && (e as { code?: string }).code === "ENOENT")) {
+      if (!(hasCode(e) && e.code === "ENOENT")) {
         throw e;
       }
     }
 
-    if (isRecord(parsed) && "savedAt" in parsed && "lista" in parsed && Array.isArray((parsed as any).lista)) {
+    // formato normalizado { savedAt, lista }
+    if (
+      isRecord(parsed) &&
+      "savedAt" in parsed &&
+      "lista" in parsed &&
+      Array.isArray((parsed as { lista?: unknown }).lista)
+    ) {
+      const savedAtRaw = (parsed as { savedAt?: unknown }).savedAt;
+      const savedAt = typeof savedAtRaw === "string" ? savedAtRaw : null;
+
       const out: Payload = {
-        savedAt:
-          typeof (parsed as any).savedAt === "string" ? (parsed as any).savedAt : null,
+        savedAt,
         lista: (parsed as { lista: Json[] }).lista,
       };
+
       return new NextResponse(JSON.stringify({ ok: true, data: out }), {
         status: 200,
         headers: noCacheHeaders(),
       });
     }
 
+    // fallback para formatos antigos/alternativos
     const lista = pickLista(parsed);
     const savedAt =
-      isRecord(parsed) && typeof parsed.savedAt === "string" ? parsed.savedAt : null;
+      isRecord(parsed) && typeof (parsed as Record<string, unknown>).savedAt === "string"
+        ? (parsed as { savedAt: string }).savedAt
+        : null;
 
     return new NextResponse(JSON.stringify({ ok: true, data: { savedAt, lista } }), {
       status: 200,
@@ -108,7 +116,9 @@ export async function GET() {
     });
   } catch (e) {
     const msg =
-      typeof e === "object" && e && "message" in e ? String((e as { message?: unknown }).message) : "erro ao carregar";
+      typeof e === "object" && e && "message" in e
+        ? String((e as { message?: unknown }).message)
+        : "erro ao carregar";
     return new NextResponse(JSON.stringify({ ok: false, error: msg }), {
       status: 500,
       headers: noCacheHeaders(),
@@ -121,7 +131,7 @@ Aceita:
 - { lista:[...] } | { items:[...] } | [ ... ]
 Salva NORMALIZADO como { savedAt, lista }.
 ===================================== */
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<NextResponse> {
   try {
     const body: unknown = await req.json();
 
@@ -129,11 +139,12 @@ export async function POST(req: Request) {
     if (Array.isArray(body)) {
       lista = body as Json[];
     } else if (isRecord(body)) {
+      const rec = body as Record<string, unknown>;
       // ternários para evitar boolean em `direct`
-      const direct = Array.isArray(body.lista)
-        ? (body.lista as Json[])
-        : Array.isArray(body.items)
-        ? (body.items as Json[])
+      const direct = Array.isArray(rec.lista)
+        ? (rec.lista as Json[])
+        : Array.isArray(rec.items)
+        ? (rec.items as Json[])
         : undefined;
 
       lista = direct ?? pickLista(body);
@@ -153,7 +164,9 @@ export async function POST(req: Request) {
     });
   } catch (e) {
     const msg =
-      typeof e === "object" && e && "message" in e ? String((e as { message?: unknown }).message) : "erro ao salvar";
+      typeof e === "object" && e && "message" in e
+        ? String((e as { message?: unknown }).message)
+        : "erro ao salvar";
     return new NextResponse(JSON.stringify({ ok: false, error: msg }), {
       status: 500,
       headers: noCacheHeaders(),

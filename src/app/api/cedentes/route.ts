@@ -16,20 +16,18 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
 const DATA_FILE = path.join(DATA_DIR, "cedentes.json");
 
 // Tipos auxiliares para JSON seguro (sem any)
-type Json =
-  | string
-  | number
-  | boolean
-  | null
-  | Json[]
-  | { [k: string]: Json };
+type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 
 type CedentesPayload = {
   savedAt: string;
 } & Record<string, Json>;
 
-function isRecord(v: unknown): v is Record<string, Json> {
+function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function hasCode(e: unknown): e is { code: string } {
+  return typeof e === "object" && e !== null && "code" in e && typeof (e as { code?: unknown }).code === "string";
 }
 
 // Cabeçalhos de resposta para evitar cache no cliente/CDN
@@ -44,7 +42,7 @@ function noCacheHeaders(): Record<string, string> {
 }
 
 // garante que a pasta exista
-async function ensureDir() {
+async function ensureDir(): Promise<void> {
   try {
     await fs.mkdir(DATA_DIR, { recursive: true });
   } catch {
@@ -52,33 +50,31 @@ async function ensureDir() {
   }
 }
 
-export async function GET() {
+export async function GET(): Promise<NextResponse> {
   try {
     await ensureDir();
     let json: CedentesPayload | null = null;
 
     try {
       const buf = await fs.readFile(DATA_FILE);
-      const parsed = JSON.parse(buf.toString("utf-8"));
-      json = isRecord(parsed)
-        ? ({ savedAt: String(parsed.savedAt ?? ""), ...parsed } as CedentesPayload)
-        : null;
-    } catch (e: unknown) {
+      const parsed: unknown = JSON.parse(buf.toString("utf-8"));
+      if (isRecord(parsed)) {
+        const savedAtRaw = (parsed as { savedAt?: unknown }).savedAt;
+        const savedAt = typeof savedAtRaw === "string" ? savedAtRaw : "";
+        // Remonta garantindo o tipo Json nos valores (sem validar campo a campo)
+        const rest = parsed as Record<string, unknown>;
+        json = { savedAt, ...rest } as unknown as CedentesPayload;
+      }
+    } catch (e) {
       // Se não existir o arquivo, apenas retorna null
-      if (
-        typeof e === "object" &&
-        e !== null &&
-        "code" in e &&
-        (e as { code?: string }).code === "ENOENT"
-      ) {
-        json = null;
-      } else {
+      if (!(hasCode(e) && e.code === "ENOENT")) {
         throw e;
       }
+      json = null;
     }
 
     return NextResponse.json({ ok: true, data: json }, { status: 200, headers: noCacheHeaders() });
-  } catch (e: unknown) {
+  } catch (e) {
     const message =
       typeof e === "object" && e !== null && "message" in e
         ? String((e as { message?: unknown }).message)
@@ -88,10 +84,10 @@ export async function GET() {
   }
 }
 
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<NextResponse> {
   try {
-    const raw = await req.json();
-    const body = isRecord(raw) ? raw : {};
+    const raw: unknown = await req.json();
+    const body = isRecord(raw) ? (raw as Record<string, Json>) : {};
 
     const payload: CedentesPayload = {
       savedAt: new Date().toISOString(),
@@ -101,8 +97,8 @@ export async function POST(req: Request) {
     await ensureDir();
     await fs.writeFile(DATA_FILE, JSON.stringify(payload, null, 2), "utf-8");
 
-    return NextResponse.json({ ok: true }, { status: 200, headers: noCacheHeaders() });
-  } catch (e: unknown) {
+    return NextResponse.json({ ok: true, data: payload }, { status: 200, headers: noCacheHeaders() });
+  } catch (e) {
     const message =
       typeof e === "object" && e !== null && "message" in e
         ? String((e as { message?: unknown }).message)
