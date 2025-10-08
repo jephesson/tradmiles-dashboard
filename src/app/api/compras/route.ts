@@ -1,4 +1,4 @@
-// app/api/compras/route.ts
+// src/app/api/compras/route.ts
 import { NextResponse } from "next/server";
 import {
   listComprasRaw,
@@ -71,11 +71,14 @@ function totalsCompatFromTotais(totais: unknown) {
 
 /** quando vier no formato antigo (com resumo dentro de itens) */
 function totalsFromItemsResumo(itens: unknown[]) {
-  const safe = Array.isArray(itens) ? (itens as AnyObj[]) : [];
+  type MediaState = { peso: number; acum: number };
+
+  const safe: AnyObj[] = Array.isArray(itens) ? (itens as AnyObj[]) : [];
   const totalPts = safe.reduce((s, i) => s + num((i.resumo as AnyObj | undefined)?.totalPts), 0);
   const custoTotal = safe.reduce((s, i) => s + num((i.resumo as AnyObj | undefined)?.custoTotal), 0);
 
-  const pesoAcum = safe.reduce(
+  // TIPAGEM EXPLÍCITA DO ACUMULADOR
+  const pesoAcum = safe.reduce<MediaState>(
     (acc, i) => {
       const milheiros = num((i.resumo as AnyObj | undefined)?.totalPts) / 1000;
       if (milheiros > 0) {
@@ -336,34 +339,57 @@ export async function GET(req: Request) {
 
     const all = (await listComprasRaw()) as AnyObj[];
 
-    const firstModo = (r: AnyObj) => str(r.modo ?? (r.itens as AnyObj[] | undefined)?.[0]?.modo ?? (r.itens as AnyObj[] | undefined)?.[0]?.kind);
+    const firstModo = (r: AnyObj) =>
+      str(
+        r.modo ??
+          (r.itens as AnyObj[] | undefined)?.[0]?.modo ??
+          (r.itens as AnyObj[] | undefined)?.[0]?.kind
+      );
 
     const rowCIA = (r: AnyObj) => {
-      const m = str(r.modo ?? (r.itens as AnyObj[] | undefined)?.[0]?.modo ?? (r.itens as AnyObj[] | undefined)?.[0]?.kind);
+      const m = firstModo(r);
       if (m === "compra") {
-        return (
-          str(r.ciaCompra) ||
-          str((r.itens as AnyObj[] | undefined)?.[0]?.valores && ((r.itens as AnyObj[])[0].valores as AnyObj).ciaCompra) ||
-          str((r.itens as AnyObj[] | undefined)?.find((x) => str((x as AnyObj).kind) === "compra")?.data && (((r.itens as AnyObj[]).find((x) => str((x as AnyObj).kind) === "compra") as AnyObj).data as AnyObj).programa) ||
-          ""
-        );
+        const v1 = str(r.ciaCompra);
+        if (v1) return v1;
+
+        const v2 = (r.itens as AnyObj[] | undefined)?.[0]?.valores as AnyObj | undefined;
+        if (isRecord(v2) && v2.ciaCompra) return str(v2.ciaCompra);
+
+        const compra = (r.itens as AnyObj[] | undefined)?.find(
+          (x) => str((x as AnyObj).kind) === "compra"
+        ) as AnyObj | undefined;
+        const v3 = isRecord(compra?.data) ? str((compra!.data as AnyObj).programa) : "";
+        return v3 || "";
       }
       if (m === "transferencia") {
-        return (
-          str(r.destCia) ||
-          str((r.itens as AnyObj[] | undefined)?.[0]?.valores && ((r.itens as AnyObj[])[0].valores as AnyObj).destCia) ||
-          str((r.itens as AnyObj[] | undefined)?.find((x) => str((x as AnyObj).kind) === "transferencia")?.data && (((r.itens as AnyObj[]).find((x) => str((x as AnyObj).kind) === "transferencia") as AnyObj).data as AnyObj).destino) ||
-          ""
-        );
+        const v1 = str(r.destCia);
+        if (v1) return v1;
+
+        const v2 = (r.itens as AnyObj[] | undefined)?.[0]?.valores as AnyObj | undefined;
+        if (isRecord(v2) && v2.destCia) return str(v2.destCia);
+
+        const transf = (r.itens as AnyObj[] | undefined)?.find(
+          (x) => str((x as AnyObj).kind) === "transferencia"
+        ) as AnyObj | undefined;
+        const v3 = isRecord(transf?.data) ? str((transf!.data as AnyObj).destino) : "";
+        return v3 || "";
       }
       return "";
     };
 
-    const rowOrigem = (r: AnyObj) =>
-      str(r.origem) ||
-      str((r.itens as AnyObj[] | undefined)?.[0]?.valores && ((r.itens as AnyObj[])[0].valores as AnyObj).origem) ||
-      str((r.itens as AnyObj[] | undefined)?.find((x) => str((x as AnyObj).kind) === "transferencia")?.data && (((r.itens as AnyObj[]).find((x) => str((x as AnyObj).kind) === "transferencia") as AnyObj).data as AnyObj).origem)) ||
-      "";
+    const rowOrigem = (r: AnyObj) => {
+      const v1 = str(r.origem);
+      if (v1) return v1;
+
+      const v2 = (r.itens as AnyObj[] | undefined)?.[0]?.valores as AnyObj | undefined;
+      if (isRecord(v2) && v2.origem) return str(v2.origem);
+
+      const transf = (r.itens as AnyObj[] | undefined)?.find(
+        (x) => str((x as AnyObj).kind) === "transferencia"
+      ) as AnyObj | undefined;
+      const v3 = isRecord(transf?.data) ? str((transf!.data as AnyObj).origem) : "";
+      return v3 || "";
+    };
 
     // Normaliza totais por linha (aceitando pontosCIA)
     const normalized = (all || []).map((r) => {
@@ -502,7 +528,7 @@ export async function PATCH(req: Request) {
         custoMilheiro: smart.custoMilheiro,
         lucroTotal: smart.lucroTotal,
       };
-      apply.calculos = { ...apply.totaisId } as Json;
+      apply.calculos = { ...apply.totaisId };
       apply.totais = {
         totalCIA: smart.totalPts,
         custoTotal: smart.custoTotal,
