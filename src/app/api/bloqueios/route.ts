@@ -14,13 +14,7 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
 const DATA_FILE = path.join(DATA_DIR, "bloqueios.json");
 
 /* ---------- Tipos utilitários ---------- */
-type Json =
-  | string
-  | number
-  | boolean
-  | null
-  | Json[]
-  | { [k: string]: Json };
+type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 
 type Payload = {
   savedAt: string;
@@ -137,12 +131,13 @@ export async function POST(req: Request) {
     if (Array.isArray(body)) {
       lista = body as Json[];
     } else if (isRecord(body)) {
-      // checa propriedades comuns
+      // use ternários para nunca gerar boolean
       const direct =
-        (Array.isArray(body.lista) && (body.lista as Json[])) ||
-        (Array.isArray(body.listaBloqueios) && (body.listaBloqueios as Json[])) ||
-        (Array.isArray(body.bloqueios) && (body.bloqueios as Json[])) ||
-        (Array.isArray(body.items) && (body.items as Json[]));
+        Array.isArray(body.lista) ? (body.lista as Json[]) :
+        Array.isArray(body.listaBloqueios) ? (body.listaBloqueios as Json[]) :
+        Array.isArray(body.bloqueios) ? (body.bloqueios as Json[]) :
+        Array.isArray(body.items) ? (body.items as Json[]) :
+        undefined;
 
       lista = direct ?? pickLista(body);
     }
