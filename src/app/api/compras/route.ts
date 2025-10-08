@@ -37,7 +37,7 @@ function num(v: unknown): number {
 function str(v: unknown): string {
   return typeof v === "string" ? v : v == null ? "" : String(v);
 }
-function noCache() {
+function noCache(): Record<string, string> {
   return {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
@@ -53,8 +53,15 @@ function toMoney(v: unknown): number {
 }
 
 /* ---------------- Totais (compat) ---------------- */
+type TotaisCompat = {
+  totalPts: number;
+  custoTotal: number;
+  custoMilheiro: number;
+  lucroTotal: number;
+};
+
 /** Lê tanto totalCIA quanto pontosCIA (nome usado na tela nova) */
-function totalsCompatFromTotais(totais: unknown) {
+function totalsCompatFromTotais(totais: unknown): TotaisCompat {
   const t = isRecord(totais) ? totais : {};
   const totalPtsRaw = num((t as AnyObj).totalCIA ?? (t as AnyObj).pontosCIA);
   const totalPts = Math.round(totalPtsRaw);
@@ -70,14 +77,13 @@ function totalsCompatFromTotais(totais: unknown) {
 }
 
 /** quando vier no formato antigo (com resumo dentro de itens) */
-function totalsFromItemsResumo(itens: unknown[]) {
+function totalsFromItemsResumo(itens: unknown[]): TotaisCompat {
   type MediaState = { peso: number; acum: number };
 
   const safe: AnyObj[] = Array.isArray(itens) ? (itens as AnyObj[]) : [];
   const totalPts = safe.reduce((s, i) => s + num((i.resumo as AnyObj | undefined)?.totalPts), 0);
   const custoTotal = safe.reduce((s, i) => s + num((i.resumo as AnyObj | undefined)?.custoTotal), 0);
 
-  // TIPAGEM EXPLÍCITA DO ACUMULADOR
   const pesoAcum = safe.reduce<MediaState>(
     (acc, i) => {
       const milheiros = num((i.resumo as AnyObj | undefined)?.totalPts) / 1000;
@@ -96,7 +102,7 @@ function totalsFromItemsResumo(itens: unknown[]) {
 }
 
 /** novo formato: soma por kind aplicando bônus e custos corretos */
-function totalsFromItemsData(itens: unknown[]) {
+function totalsFromItemsData(itens: unknown[]): TotaisCompat {
   const arr = Array.isArray(itens) ? (itens as AnyObj[]) : [];
   let totalPts = 0;
   let custoTotal = 0;
@@ -155,7 +161,7 @@ function totalsFromItemsData(itens: unknown[]) {
     const custo = toMoney(custoCandidates.find((v) => num(v) > 0));
 
     const totais = isRecord((it as AnyObj).totais) ? ((it as AnyObj).totais as AnyObj) : undefined;
-    const ptsAlt = num(totais?.totalCIA ?? totais?.pontosCIA ?? totais?.cia);
+    const ptsAlt = num(totais?.totalCIA ?? totais?.pontosCIA ?? (totais as AnyObj | undefined)?.cia);
     const custoAlt = toMoney(totais?.custoTotal);
 
     totalPts += pts > 0 ? pts : ptsAlt;
@@ -176,7 +182,7 @@ function totalsFromItemsData(itens: unknown[]) {
 }
 
 /** escolhe automaticamente o melhor jeito de consolidar totais */
-function smartTotals(itens: unknown[], totais?: unknown) {
+function smartTotals(itens: unknown[], totais?: unknown): TotaisCompat {
   if (
     totais &&
     (isRecord(totais) &&
@@ -293,7 +299,7 @@ function normalizeFromNewShape(body: AnyObj) {
 }
 
 /** ===================== GET ===================== */
-export async function GET(req: Request) {
+export async function GET(req: Request): Promise<NextResponse> {
   try {
     const url = new URL(req.url);
     const id = url.searchParams.get("id");
@@ -346,7 +352,7 @@ export async function GET(req: Request) {
           (r.itens as AnyObj[] | undefined)?.[0]?.kind
       );
 
-    const rowCIA = (r: AnyObj) => {
+    const rowCIA = (r: AnyObj): string => {
       const m = firstModo(r);
       if (m === "compra") {
         const v1 = str(r.ciaCompra);
@@ -358,7 +364,7 @@ export async function GET(req: Request) {
         const compra = (r.itens as AnyObj[] | undefined)?.find(
           (x) => str((x as AnyObj).kind) === "compra"
         ) as AnyObj | undefined;
-        const v3 = isRecord(compra?.data) ? str((compra!.data as AnyObj).programa) : "";
+        const v3 = isRecord(compra?.data) ? str((compra.data as AnyObj).programa) : "";
         return v3 || "";
       }
       if (m === "transferencia") {
@@ -371,13 +377,13 @@ export async function GET(req: Request) {
         const transf = (r.itens as AnyObj[] | undefined)?.find(
           (x) => str((x as AnyObj).kind) === "transferencia"
         ) as AnyObj | undefined;
-        const v3 = isRecord(transf?.data) ? str((transf!.data as AnyObj).destino) : "";
+        const v3 = isRecord(transf?.data) ? str((transf.data as AnyObj).destino) : "";
         return v3 || "";
       }
       return "";
     };
 
-    const rowOrigem = (r: AnyObj) => {
+    const rowOrigem = (r: AnyObj): string => {
       const v1 = str(r.origem);
       if (v1) return v1;
 
@@ -387,7 +393,7 @@ export async function GET(req: Request) {
       const transf = (r.itens as AnyObj[] | undefined)?.find(
         (x) => str((x as AnyObj).kind) === "transferencia"
       ) as AnyObj | undefined;
-      const v3 = isRecord(transf?.data) ? str((transf!.data as AnyObj).origem) : "";
+      const v3 = isRecord(transf?.data) ? str((transf.data as AnyObj).origem) : "";
       return v3 || "";
     };
 
@@ -461,7 +467,7 @@ export async function GET(req: Request) {
 }
 
 /** ===================== POST (upsert) ===================== */
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<NextResponse> {
   try {
     const raw: unknown = await req.json();
     const body = isRecord(raw) ? (raw as AnyObj) : {};
@@ -510,7 +516,7 @@ export async function POST(req: Request) {
 }
 
 /** ===================== PATCH (?id=) ===================== */
-export async function PATCH(req: Request) {
+export async function PATCH(req: Request): Promise<NextResponse> {
   const url = new URL(req.url);
   const id = url.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400, headers: noCache() });
@@ -580,7 +586,7 @@ export async function PATCH(req: Request) {
 }
 
 /** ===================== DELETE (?id=) ===================== */
-export async function DELETE(req: Request) {
+export async function DELETE(req: Request): Promise<NextResponse> {
   const url = new URL(req.url);
   const id = url.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400, headers: noCache() });
