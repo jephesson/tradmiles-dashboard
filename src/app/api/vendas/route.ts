@@ -7,6 +7,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+/* ================== Tipos ================== */
 type PaymentStatus = "pago" | "pendente";
 type CIA = "latam" | "smiles";
 
@@ -18,6 +19,18 @@ type CancelInfo = {
   recreditPoints?: boolean;
   note?: string | null;
 };
+
+type ContaEscolhida = {
+  id: string;
+  nome: string;
+  usar: number;
+  disponivel: number;
+  leftover: number;
+  compraId: string | null;
+  regra?: string;
+};
+
+type SugestaoParte = { id: string; nome: string; usar: number; disp: number };
 
 type VendaRecord = {
   id: string;
@@ -37,16 +50,8 @@ type VendaRecord = {
   clienteNome: string | null;
   clienteOrigem: string | null;
 
-  contaEscolhida?: {
-    id: string;
-    nome: string;
-    usar: number;
-    disponivel: number;
-    leftover: number;
-    compraId: string | null;
-    regra?: string;
-  } | null;
-  sugestaoCombinacao?: Array<{ id: string; nome: string; usar: number; disp: number }>;
+  contaEscolhida?: ContaEscolhida | null;
+  sugestaoCombinacao?: SugestaoParte[];
 
   milheiros: number;
   valorMilheiro: number;
@@ -71,6 +76,37 @@ type VendaRecord = {
   cancelInfo?: CancelInfo | null;
 };
 
+type CedenteRec = {
+  identificador: string;
+  nome: string | null;
+  nome_completo: string | null;
+  latam: number;
+  smiles: number;
+  livelo: number;
+  esfera: number;
+};
+
+/* ================== Utils ================== */
+function noCache(): Record<string, string> {
+  return {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+    "Surrogate-Control": "no-store",
+  };
+}
+function up(s: unknown): string {
+  return String(s ?? "").toUpperCase();
+}
+function toNum(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 /* ================== Persistência ================== */
 // Em produção (Vercel) só /tmp é gravável; local: ./data
 const ROOT_DIR = process.env.VERCEL ? "/tmp" : process.cwd();
@@ -78,7 +114,7 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
 const VENDAS_FILE = path.join(DATA_DIR, "vendas.json");
 const CEDENTES_FILE = path.join(DATA_DIR, "cedentes.json");
 
-async function ensureDir() {
+async function ensureDir(): Promise<void> {
   try {
     await fs.mkdir(DATA_DIR, { recursive: true });
   } catch {
@@ -90,122 +126,97 @@ async function readJson<T>(file: string, fallback: T): Promise<T> {
   try {
     const raw = await fs.readFile(file, "utf8");
     return JSON.parse(raw) as T;
-  } catch (e: any) {
-    if (e?.code === "ENOENT") return fallback;
-    // Se o arquivo existir mas estiver corrompido, não derruba a API
-    try {
-      return fallback;
-    } catch {
-      return fallback;
-    }
+  } catch (e: unknown) {
+    // ENOENT ou JSON inválido => retorna fallback
+    return fallback;
   }
 }
 
-async function writeJson(file: string, data: any) {
+async function writeJson<T>(file: string, data: T): Promise<void> {
   await ensureDir();
   await fs.writeFile(file, JSON.stringify(data, null, 2), "utf8");
 }
 
-function up(s: any) {
-  return String(s || "").toUpperCase();
-}
-
-function noCache() {
+function pickCedenteFields(c: unknown): CedenteRec {
+  const r = isRecord(c) ? c : {};
   return {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-    Pragma: "no-cache",
-    Expires: "0",
-    "Surrogate-Control": "no-store",
-  };
-}
-
-function pickCedenteFields(c: any) {
-  return {
-    identificador: c.identificador,
-    nome: c.nome ?? c.nome_completo ?? null,
-    nome_completo: c.nome_completo ?? c.nome ?? null,
-    latam: Number(c.latam || 0),
-    smiles: Number(c.smiles || 0),
-    livelo: Number(c.livelo || 0),
-    esfera: Number(c.esfera || 0),
+    identificador: String(r["identificador"] ?? ""),
+    nome:
+      (typeof r["nome"] === "string" ? r["nome"] : null) ??
+      (typeof r["nome_completo"] === "string" ? r["nome_completo"] : null),
+    nome_completo:
+      (typeof r["nome_completo"] === "string" ? r["nome_completo"] : null) ??
+      (typeof r["nome"] === "string" ? r["nome"] : null),
+    latam: toNum(r["latam"]),
+    smiles: toNum(r["smiles"]),
+    livelo: toNum(r["livelo"]),
+    esfera: toNum(r["esfera"]),
   };
 }
 
 /** Lê o arquivo de cedentes aceitando vários formatos e devolve um writer que preserva o formato */
 async function loadCedentesFile(): Promise<{
-  list: any[];
-  write: (arr: any[]) => Promise<void>;
+  list: CedenteRec[];
+  write: (arr: CedenteRec[]) => Promise<void>;
 }> {
-  const parsed = await readJson<any>(CEDENTES_FILE, null as any);
+  const parsed = await readJson<unknown>(CEDENTES_FILE, null);
 
-  let list: any[] = [];
+  let list: CedenteRec[] = [];
   if (Array.isArray(parsed)) {
-    list = parsed;
-  } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.listaCedentes)) {
-    list = parsed.listaCedentes;
-  } else if (
-    parsed &&
-    typeof parsed === "object" &&
-    parsed.data &&
-    Array.isArray(parsed.data.listaCedentes)
-  ) {
-    list = parsed.data.listaCedentes;
+    list = parsed.map(pickCedenteFields);
+  } else if (isRecord(parsed) && Array.isArray(parsed["listaCedentes"])) {
+    list = (parsed["listaCedentes"] as unknown[]).map(pickCedenteFields);
+  } else if (isRecord(parsed) && isRecord(parsed["data"]) && Array.isArray(parsed["data"]["listaCedentes"])) {
+    list = (parsed["data"]["listaCedentes"] as unknown[]).map(pickCedenteFields);
   }
 
-  const write = async (arr: any[]) => {
+  const write = async (arr: CedenteRec[]) => {
     if (Array.isArray(parsed)) {
-      await writeJson(CEDENTES_FILE, arr);
+      await writeJson<CedenteRec[]>(CEDENTES_FILE, arr);
       return;
     }
-    if (parsed && typeof parsed === "object" && Array.isArray(parsed?.listaCedentes)) {
+    if (isRecord(parsed) && Array.isArray(parsed["listaCedentes"])) {
       const next = { ...parsed, listaCedentes: arr };
       await writeJson(CEDENTES_FILE, next);
       return;
     }
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      parsed.data &&
-      Array.isArray(parsed.data.listaCedentes)
-    ) {
-      const next = { ...parsed, data: { ...parsed.data, listaCedentes: arr } };
+    if (isRecord(parsed) && isRecord(parsed["data"]) && Array.isArray(parsed["data"]["listaCedentes"])) {
+      const next = { ...parsed, data: { ...(parsed["data"] as object), listaCedentes: arr } };
       await writeJson(CEDENTES_FILE, next);
       return;
     }
-    await writeJson(CEDENTES_FILE, arr);
+    await writeJson<CedenteRec[]>(CEDENTES_FILE, arr);
   };
 
   return { list, write };
 }
 
 /* ================== Handlers ================== */
-export async function GET() {
+export async function GET(): Promise<NextResponse> {
   const vendas = await readJson<VendaRecord[]>(VENDAS_FILE, []);
   return NextResponse.json({ ok: true, lista: vendas }, { headers: noCache() });
 }
 
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<NextResponse> {
   try {
-    const body = await req.json();
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
 
-    if (!body?.cia || !body?.pontos) {
+    if (!body?.["cia"] || !body?.["pontos"]) {
       return NextResponse.json(
         { ok: false, error: "Campos obrigatórios ausentes (cia, pontos)." },
         { status: 400, headers: noCache() }
       );
     }
 
-    const { list: cedentesFromDisk, write: writeCedentesPreservingShape } =
-      await loadCedentesFile();
+    const { list: cedentesFromDisk, write: writeCedentesPreservingShape } = await loadCedentesFile();
 
-    const seedArr: any[] = Array.isArray(body.cedentes)
-      ? body.cedentes
-      : Array.isArray(body.cedentesSnapshot)
-      ? body.cedentesSnapshot
+    const seedArr = Array.isArray(body["cedentes"])
+      ? (body["cedentes"] as unknown[])
+      : Array.isArray(body["cedentesSnapshot"])
+      ? (body["cedentesSnapshot"] as unknown[])
       : [];
 
-    let cedentes =
+    let cedentes: CedenteRec[] =
       Array.isArray(cedentesFromDisk) && cedentesFromDisk.length
         ? [...cedentesFromDisk]
         : seedArr.length
@@ -214,7 +225,7 @@ export async function POST(req: Request) {
 
     // Se não existe arquivo e veio um snapshot no POST, inicializa o arquivo
     if (cedentesFromDisk.length === 0 && seedArr.length) {
-      await writeJson(CEDENTES_FILE, cedentes);
+      await writeJson<CedenteRec[]>(CEDENTES_FILE, cedentes);
     }
 
     const id = "V" + Date.now();
@@ -222,42 +233,44 @@ export async function POST(req: Request) {
       id,
       createdAt: new Date().toISOString(),
 
-      data: body.data || "",
-      pontos: Number(body.pontos || 0),
-      cia: body.cia === "latam" ? "latam" : "smiles",
-      qtdPassageiros: Number(body.qtdPassageiros || 0),
+      data: String(body["data"] ?? ""),
+      pontos: toNum(body["pontos"]),
+      cia: body["cia"] === "latam" ? "latam" : "smiles",
+      qtdPassageiros: toNum(body["qtdPassageiros"]),
 
-      funcionarioId: body.funcionarioId ?? null,
-      funcionarioNome: body.funcionarioNome ?? null,
-      userName: body.userName ?? null,
-      userEmail: body.userEmail ?? null,
+      funcionarioId: (body["funcionarioId"] as string | null | undefined) ?? null,
+      funcionarioNome: (body["funcionarioNome"] as string | null | undefined) ?? null,
+      userName: (body["userName"] as string | null | undefined) ?? null,
+      userEmail: (body["userEmail"] as string | null | undefined) ?? null,
 
-      clienteId: body.clienteId ?? null,
-      clienteNome: body.clienteNome ?? null,
-      clienteOrigem: body.clienteOrigem ?? null,
+      clienteId: (body["clienteId"] as string | null | undefined) ?? null,
+      clienteNome: (body["clienteNome"] as string | null | undefined) ?? null,
+      clienteOrigem: (body["clienteOrigem"] as string | null | undefined) ?? null,
 
-      contaEscolhida: body.contaEscolhida ?? null,
-      sugestaoCombinacao: Array.isArray(body.sugestaoCombinacao) ? body.sugestaoCombinacao : [],
+      contaEscolhida: (body["contaEscolhida"] as ContaEscolhida | null | undefined) ?? null,
+      sugestaoCombinacao: Array.isArray(body["sugestaoCombinacao"])
+        ? (body["sugestaoCombinacao"] as SugestaoParte[])
+        : [],
 
-      milheiros: Number(body.milheiros || 0),
-      valorMilheiro: Number(body.valorMilheiro || 0),
-      valorPontos: Number(body.valorPontos || 0),
-      taxaEmbarque: Number(body.taxaEmbarque || 0),
-      totalCobrar: Number(body.totalCobrar || 0),
+      milheiros: toNum(body["milheiros"]),
+      valorMilheiro: toNum(body["valorMilheiro"]),
+      valorPontos: toNum(body["valorPontos"]),
+      taxaEmbarque: toNum(body["taxaEmbarque"]),
+      totalCobrar: toNum(body["totalCobrar"]),
 
-      metaMilheiro: typeof body.metaMilheiro === "number" ? body.metaMilheiro : null,
-      comissaoBase: Number(body.comissaoBase || 0),
-      comissaoBonusMeta: Number(body.comissaoBonusMeta || 0),
-      comissaoTotal: Number(body.comissaoTotal || 0),
+      metaMilheiro: typeof body["metaMilheiro"] === "number" ? (body["metaMilheiro"] as number) : null,
+      comissaoBase: toNum(body["comissaoBase"]),
+      comissaoBonusMeta: toNum(body["comissaoBonusMeta"]),
+      comissaoTotal: toNum(body["comissaoTotal"]),
 
-      cartaoFuncionarioId: body.cartaoFuncionarioId ?? null,
-      cartaoFuncionarioNome: body.cartaoFuncionarioNome ?? null,
+      cartaoFuncionarioId: (body["cartaoFuncionarioId"] as string | null | undefined) ?? null,
+      cartaoFuncionarioNome: (body["cartaoFuncionarioNome"] as string | null | undefined) ?? null,
 
-      pagamentoStatus: (body.pagamentoStatus as PaymentStatus) || "pendente",
+      pagamentoStatus: (body["pagamentoStatus"] as PaymentStatus) || "pendente",
 
-      localizador: body.localizador ?? null,
-      origemIATA: body.origemIATA ?? null,
-      sobrenome: body.sobrenome ?? null,
+      localizador: (body["localizador"] as string | null | undefined) ?? null,
+      origemIATA: (body["origemIATA"] as string | null | undefined) ?? null,
+      sobrenome: (body["sobrenome"] as string | null | undefined) ?? null,
 
       cancelInfo: null,
     };
@@ -267,41 +280,38 @@ export async function POST(req: Request) {
     await writeJson(VENDAS_FILE, vendas);
 
     // desconta pontos
-    const saldoField = record.cia === "latam" ? "latam" : "smiles";
+    const saldoField: keyof CedenteRec = record.cia === "latam" ? "latam" : "smiles";
     const descontar = (cedenteId: string, qtd: number) => {
-      if (!Array.isArray(cedentes)) return;
-      const idx = cedentes.findIndex((c: any) => up(c.identificador) === up(cedenteId));
+      const idx = cedentes.findIndex((c) => up(c.identificador) === up(cedenteId));
       if (idx < 0) return;
-      const antes = Number(cedentes[idx][saldoField] || 0);
-      const depois = Math.max(0, antes - Number(qtd || 0));
-      cedentes[idx][saldoField] = depois;
+      const antes = cedentes[idx][saldoField];
+      cedentes[idx][saldoField] = Math.max(0, antes - toNum(qtd));
     };
 
     if (record.contaEscolhida?.id) {
       descontar(record.contaEscolhida.id, record.pontos);
     } else if (Array.isArray(record.sugestaoCombinacao) && record.sugestaoCombinacao.length) {
       for (const parte of record.sugestaoCombinacao) {
-        descontar(parte.id, Number(parte.usar || 0));
+        descontar(parte.id, toNum(parte.usar));
       }
     }
 
     await writeCedentesPreservingShape(cedentes);
 
     return NextResponse.json({ ok: true, id, nextCedentes: cedentes }, { headers: noCache() });
-  } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || "Erro inesperado" },
-      { status: 500, headers: noCache() }
-    );
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Erro inesperado";
+    return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCache() });
   }
 }
 
-export async function PATCH(req: Request) {
+export async function PATCH(req: Request): Promise<NextResponse> {
   try {
-    const body = await req.json();
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const vendas = await readJson<VendaRecord[]>(VENDAS_FILE, []);
 
-    const idx = vendas.findIndex((v) => v.id === body?.id);
+    const id = String(body["id"] ?? "");
+    const idx = vendas.findIndex((v) => v.id === id);
     if (idx < 0) {
       return NextResponse.json(
         { ok: false, error: "Venda não encontrada." },
@@ -311,20 +321,21 @@ export async function PATCH(req: Request) {
     const cur = vendas[idx];
 
     // 1) Atualização simples do pagamentoStatus
-    if (body.pagamentoStatus && (body.pagamentoStatus === "pago" || body.pagamentoStatus === "pendente")) {
-      vendas[idx] = { ...cur, pagamentoStatus: body.pagamentoStatus as PaymentStatus };
+    if (body["pagamentoStatus"] && (body["pagamentoStatus"] === "pago" || body["pagamentoStatus"] === "pendente")) {
+      vendas[idx] = { ...cur, pagamentoStatus: body["pagamentoStatus"] as PaymentStatus };
       await writeJson(VENDAS_FILE, vendas);
       return NextResponse.json({ ok: true, record: vendas[idx] }, { headers: noCache() });
     }
 
     // 2) Cancelamento (com taxas/estorno e possível devolução de pontos)
-    if (body.cancel) {
-      const taxaCia = Number(body.cancel.taxaCia || 0);
-      const taxaEmpresa = Number(body.cancel.taxaEmpresa || 0);
-      const recredit = !!body.cancel.recreditPoints;
-      const note = typeof body.cancel.note === "string" ? body.cancel.note : null;
+    if (isRecord(body["cancel"])) {
+      const cancel = body["cancel"] as Record<string, unknown>;
+      const taxaCia = toNum(cancel["taxaCia"]);
+      const taxaEmpresa = toNum(cancel["taxaEmpresa"]);
+      const recredit = Boolean(cancel["recreditPoints"]);
+      const note = typeof cancel["note"] === "string" ? (cancel["note"] as string) : null;
 
-      const refund = Math.max(0, Number(cur.totalCobrar || 0) - (taxaCia + taxaEmpresa));
+      const refund = Math.max(0, toNum(cur.totalCobrar) - (taxaCia + taxaEmpresa));
 
       const updated: VendaRecord = {
         ...cur,
@@ -341,19 +352,19 @@ export async function PATCH(req: Request) {
       // devolve pontos (opcional)
       if (recredit) {
         const { list: cedentes, write } = await loadCedentesFile();
-        const saldoField = cur.cia === "latam" ? "latam" : "smiles";
+        const saldoField: keyof CedenteRec = cur.cia === "latam" ? "latam" : "smiles";
         const creditar = (cedenteId: string, qtd: number) => {
-          const i = cedentes.findIndex((c: any) => up(c.identificador) === up(cedenteId));
+          const i = cedentes.findIndex((c) => up(c.identificador) === up(cedenteId));
           if (i < 0) return;
-          const antes = Number(cedentes[i][saldoField] || 0);
-          cedentes[i][saldoField] = Math.max(0, antes + Number(qtd || 0));
+          const antes = cedentes[i][saldoField];
+          cedentes[i][saldoField] = Math.max(0, antes + toNum(qtd));
         };
 
         if (cur.contaEscolhida?.id) {
           creditar(cur.contaEscolhida.id, cur.pontos);
         } else if (Array.isArray(cur.sugestaoCombinacao) && cur.sugestaoCombinacao.length) {
           for (const parte of cur.sugestaoCombinacao) {
-            creditar(parte.id, Number(parte.usar || 0));
+            creditar(parte.id, toNum(parte.usar));
           }
         }
         await write(cedentes);
@@ -368,15 +379,13 @@ export async function PATCH(req: Request) {
       { ok: false, error: "Nada para atualizar (use pagamentoStatus ou cancel)." },
       { status: 400, headers: noCache() }
     );
-  } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || "Erro inesperado" },
-      { status: 500, headers: noCache() }
-    );
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Erro inesperado";
+    return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCache() });
   }
 }
 
-export async function DELETE(req: Request) {
+export async function DELETE(req: Request): Promise<NextResponse> {
   try {
     const url = new URL(req.url);
     let id = url.searchParams.get("id");
@@ -384,10 +393,12 @@ export async function DELETE(req: Request) {
 
     // também aceita body
     try {
-      const body = await req.json();
-      if (body?.id) id = body.id;
-      if (typeof body?.restorePoints === "boolean") restorePoints = body.restorePoints;
-    } catch {}
+      const body = (await req.json()) as Record<string, unknown>;
+      if (body?.["id"]) id = String(body["id"]);
+      if (typeof body?.["restorePoints"] === "boolean") restorePoints = Boolean(body["restorePoints"]);
+    } catch {
+      /* body vazio */
+    }
 
     if (!id) {
       return NextResponse.json(
@@ -410,20 +421,20 @@ export async function DELETE(req: Request) {
     // devolve pontos ao apagar (por erro) — padrão: sim
     if (restorePoints) {
       const { list: cedentes, write } = await loadCedentesFile();
-      const saldoField = removed.cia === "latam" ? "latam" : "smiles";
+      const saldoField: keyof CedenteRec = removed.cia === "latam" ? "latam" : "smiles";
 
       const creditar = (cedenteId: string, qtd: number) => {
-        const i = cedentes.findIndex((c: any) => up(c.identificador) === up(cedenteId));
+        const i = cedentes.findIndex((c) => up(c.identificador) === up(cedenteId));
         if (i < 0) return;
-        const antes = Number(cedentes[i][saldoField] || 0);
-        cedentes[i][saldoField] = Math.max(0, antes + Number(qtd || 0));
+        const antes = cedentes[i][saldoField];
+        cedentes[i][saldoField] = Math.max(0, antes + toNum(qtd));
       };
 
       if (removed.contaEscolhida?.id) {
         creditar(removed.contaEscolhida.id, removed.pontos);
       } else if (Array.isArray(removed.sugestaoCombinacao) && removed.sugestaoCombinacao.length) {
         for (const parte of removed.sugestaoCombinacao) {
-          creditar(parte.id, Number(parte.usar || 0));
+          creditar(parte.id, toNum(parte.usar));
         }
       }
       await write(cedentes);
@@ -432,10 +443,8 @@ export async function DELETE(req: Request) {
     vendas.splice(idx, 1);
     await writeJson(VENDAS_FILE, vendas);
     return NextResponse.json({ ok: true, removedId: id }, { headers: noCache() });
-  } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || "Erro inesperado" },
-      { status: 500, headers: noCache() }
-    );
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Erro inesperado";
+    return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCache() });
   }
 }
