@@ -1,7 +1,7 @@
 // src/app/dashboard/bloqueios/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /* ===== Tipos ===== */
 type CIAKey = "latam" | "esfera" | "livelo" | "smiles";
@@ -45,10 +45,8 @@ const BLOQ_KEY = "TM_BLOQUEIOS";
 
 /* ===== Helpers ===== */
 function uuid() {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    // @ts-ignore
-    return crypto.randomUUID();
-  }
+  const v = (globalThis.crypto as Crypto | undefined)?.randomUUID?.();
+  if (v) return v;
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
@@ -72,14 +70,22 @@ function daysLeft(toIso: string | null) {
 function ciaLabel(k: CIAKey) {
   return k === "latam" ? "Latam" : k === "esfera" ? "Esfera" : k === "livelo" ? "Livelo" : "Smiles";
 }
-function pickListaFromApi(json: any): Bloqueio[] {
-  // Seu /api/bloqueios normaliza para { ok:true, data:{ lista:[...] } }
+function pickListaFromApi(json: unknown): Bloqueio[] {
+  const obj = json as
+    | {
+        data?: { lista?: Bloqueio[]; listaBloqueios?: Bloqueio[] };
+        lista?: Bloqueio[];
+        listaBloqueios?: Bloqueio[];
+        items?: Bloqueio[];
+      }
+    | undefined;
+
   return (
-    json?.data?.lista ??
-    json?.data?.listaBloqueios ??
-    json?.lista ??
-    json?.listaBloqueios ??
-    json?.items ??
+    obj?.data?.lista ??
+    obj?.data?.listaBloqueios ??
+    obj?.lista ??
+    obj?.listaBloqueios ??
+    obj?.items ??
     []
   );
 }
@@ -104,32 +110,16 @@ export default function BloqueiosPage() {
   const [editing, setEditing] = useState<Bloqueio | null>(null);
   const [mode, setMode] = useState<"add" | "edit">("add");
 
-  /* ---------- carregar dados ---------- */
-  useEffect(() => {
-    // 1) tenta localStorage (não some quando sair e voltar)
-    try {
-      const raw = localStorage.getItem(BLOQ_KEY);
-      if (raw) {
-        const arr = JSON.parse(raw);
-        if (Array.isArray(arr)) setBloqueios(arr);
-      }
-    } catch {}
-
-    // 2) sincroniza com o servidor
-    void loadFromServer();
-
-    // 3) carrega cedentes para o select
-    void loadCedentes();
-  }, []);
-
-  function setBloqueiosAndPersist(next: Bloqueio[]) {
+  const setBloqueiosAndPersist = useCallback((next: Bloqueio[]) => {
     setBloqueios(next);
     try {
       localStorage.setItem(BLOQ_KEY, JSON.stringify(next));
-    } catch {}
-  }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
-  async function loadFromServer() {
+  const loadFromServer = useCallback(async () => {
     try {
       setLoading(true);
       const res = await fetch("/api/bloqueios", { method: "GET", cache: "no-store" });
@@ -139,13 +129,14 @@ export default function BloqueiosPage() {
         if (Array.isArray(lista)) setBloqueiosAndPersist(lista);
       }
     } catch (e) {
+      // loga, mas não quebra a página
       console.error(e);
     } finally {
       setLoading(false);
     }
-  }
+  }, [setBloqueiosAndPersist]);
 
-  async function loadCedentes() {
+  const loadCedentes = useCallback(async () => {
     try {
       const res = await fetch("/api/cedentes", { method: "GET", cache: "no-store" });
       const json = await res.json();
@@ -154,7 +145,27 @@ export default function BloqueiosPage() {
     } catch (e) {
       console.error(e);
     }
-  }
+  }, []);
+
+  /* ---------- carregar dados ---------- */
+  useEffect(() => {
+    // 1) tenta localStorage (não some quando sair e voltar)
+    try {
+      const raw = localStorage.getItem(BLOQ_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) setBloqueios(arr);
+      }
+    } catch {
+      /* ignore */
+    }
+
+    // 2) sincroniza com o servidor
+    void loadFromServer();
+
+    // 3) carrega cedentes para o select
+    void loadCedentes();
+  }, [loadFromServer, loadCedentes]);
 
   async function saveToServer(next: Bloqueio[]) {
     try {
@@ -170,8 +181,9 @@ export default function BloqueiosPage() {
       setBloqueiosAndPersist(next);
       setSelected(new Set());
       alert("Bloqueios salvos ✅");
-    } catch (e: any) {
-      alert(`Erro ao salvar: ${e.message}`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Erro desconhecido";
+      alert(`Erro ao salvar: ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -204,14 +216,16 @@ export default function BloqueiosPage() {
 
   function onChangeField(patch: Partial<Bloqueio>) {
     if (!editing) return;
-    let next = { ...editing, ...patch } as Bloqueio;
+    const base = { ...editing, ...patch } as Bloqueio;
+
     // se mudar startedAt ou periodDays (e houver periodDays), recalc expected
-    if (patch.startedAt || patch.periodDays !== undefined) {
-      if (next.periodDays && next.periodDays > 0) {
-        next.expectedUnlockAt = addDays(next.startedAt, next.periodDays);
-      }
+    if ((patch.startedAt || patch.periodDays !== undefined) && base.periodDays && base.periodDays > 0) {
+      const recalculated = addDays(base.startedAt, base.periodDays);
+      setEditing({ ...base, expectedUnlockAt: recalculated });
+      return;
     }
-    setEditing(next);
+
+    setEditing(base);
   }
 
   function onChangeCedente(id: string) {
@@ -249,10 +263,10 @@ export default function BloqueiosPage() {
   /* ---------- ações de linha / massa ---------- */
   function toggleOne(id: string) {
     setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
+      const nxt = new Set(prev);
+      if (nxt.has(id)) nxt.delete(id);
+      else nxt.add(id);
+      return nxt;
     });
   }
   function toggleAll(ids: string[], check: boolean) {
@@ -384,7 +398,7 @@ export default function BloqueiosPage() {
           <select
             className="rounded-xl border px-3 py-2 text-sm"
             value={filterCIA}
-            onChange={(e) => setFilterCIA(e.target.value as any)}
+            onChange={(e) => setFilterCIA(e.target.value as "all" | CIAKey)}
           >
             <option value="all">Todas as Cias</option>
             <option value="latam">Latam</option>
@@ -397,9 +411,9 @@ export default function BloqueiosPage() {
             className="rounded-xl border px-3 py-2 text-sm"
             value={`${sortKey}:${sortDir}`}
             onChange={(e) => {
-              const [k, d] = e.target.value.split(":") as [SortKey, SortDir];
-              setSortKey(k);
-              setSortDir(d);
+              const [k, d] = e.target.value.split(":");
+              setSortKey(k as SortKey);
+              setSortDir(d as SortDir);
             }}
           >
             <option value="restam:asc">Ordenar: Restam (↑)</option>
@@ -447,7 +461,9 @@ export default function BloqueiosPage() {
 
       {/* ações em massa */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="text-xs text-slate-600">Selecionados: <b>{selected.size}</b></div>
+        <div className="text-xs text-slate-600">
+          Selecionados: <b>{selected.size}</b>
+        </div>
         <div className="flex gap-2">
           <button
             onClick={() => encerrarSelecionados(Array.from(selected))}
@@ -519,9 +535,7 @@ export default function BloqueiosPage() {
                   <td className="px-3 py-2">{ciaLabel(b.cia)}</td>
                   <td className="px-3 py-2">{fmtDate(b.startedAt)}</td>
                   <td className="px-3 py-2">{fmtDate(b.expectedUnlockAt)}</td>
-                  <td className="px-3 py-2 text-right">
-                    {left === null ? "—" : `${left}d`}
-                  </td>
+                  <td className="px-3 py-2 text-right">{left === null ? "—" : `${left}d`}</td>
                   <td className="px-3 py-2">
                     <span
                       className={
