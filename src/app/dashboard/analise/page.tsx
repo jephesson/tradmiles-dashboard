@@ -2,8 +2,16 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  Bar, BarChart, CartesianGrid, Legend, Line, LineChart,
-  ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from "recharts";
 
 /* ======================================================================
@@ -13,7 +21,7 @@ import {
 /** Storage keys */
 const VENDAS_KEY = "TM_VENDAS";
 const COMPRAS_KEY = "TM_COMPRAS";
-const MANUAL_KEY  = "TM_ANALISE_MANUAL";
+const MANUAL_KEY = "TM_ANALISE_MANUAL";
 
 /** Movimentações de CAIXA desta página */
 const CAIXA_TXNS_KEY = "TM_ANALISE_CASH_TXNS";
@@ -22,24 +30,27 @@ const CAIXA_TXNS_KEY = "TM_ANALISE_CASH_TXNS";
 const DEBTS_KEY = "TM_DEBTS";
 const DEBTS_TXNS_KEY = "TM_DEBTS_TXNS";
 
+/* =========================
+ *  Tipos de domínio
+ * ========================= */
 type Venda = {
   id: string;
-  data: string;
+  data: string; // ISO ou yyyy-mm-dd
   valorTotal?: number;
   lucro?: number;
   pontos?: number;
   status?: string;
   funcionarioId?: string;
-  cia?: string;             // latam|smiles|livelo|esfera
+  cia?: "latam" | "smiles" | "livelo" | "esfera" | string;
   pendenteCliente?: boolean;
 };
 
 type Compra = {
   id: string;
-  data: string;
+  data: string; // ISO ou yyyy-mm-dd
   valorTotal?: number;
   pontos?: number;
-  programa?: string;        // latam|smiles|livelo|esfera
+  programa?: "latam" | "smiles" | "livelo" | "esfera" | string;
 };
 
 type Manual = {
@@ -47,33 +58,92 @@ type Manual = {
   caixaAtual: number;
 
   /** Abaixo mantidos SOMENTE-LEITURA nesta página (podem ser alimentados por outras telas/processos) */
-  valoresAReceber: number;     // não-vendas (manual em outra tela)
-  pagarFuncionarios: number;   // manual em outra tela
-  pendenteCedentes: number;    // manual em outra tela
+  valoresAReceber: number; // não-vendas (manual em outra tela)
+  pagarFuncionarios: number; // manual em outra tela
+  pendenteCedentes: number; // manual em outra tela
   saldoPontosBloqueados: number;
 };
 
-type CashTxn = { id: string; tipo: "caixa_in" | "caixa_out"; valor: number; obs?: string; dataISO: string };
-type Debt    = { id: string; nome: string; inicial: number; createdAt: string; isClosed?: boolean };
-type DebtTxn = { id: string; debtId: string; tipo: "add" | "pay"; valor: number; obs?: string; dataISO: string };
+type CashTxn = {
+  id: string;
+  tipo: "caixa_in" | "caixa_out";
+  valor: number;
+  obs?: string;
+  dataISO: string;
+};
 
+type Debt = {
+  id: string;
+  nome: string;
+  inicial: number;
+  createdAt: string;
+  isClosed?: boolean;
+};
+
+type DebtTxn = {
+  id: string;
+  debtId: string;
+  tipo: "add" | "pay";
+  valor: number;
+  obs?: string;
+  dataISO: string;
+};
+
+/* =========================
+ *  Utilitários
+ * ========================= */
 function loadLS<T>(key: string, fallback: T): T {
-  try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch { return fallback; }
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
 }
-function saveLS<T>(key: string, value: T) { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} }
+function saveLS<T>(key: string, value: T) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* noop */
+  }
+}
 
 function fmtMoney(n: number) {
-  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" })
-    .format(Number(n) || 0);
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(n) || 0);
 }
-function parseISO(iso?: string) { if (!iso) return null; const d = new Date(iso); return isNaN(d.getTime()) ? null : d; }
-function sameYM(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth(); }
-function monthKey(d: Date) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
-function endOfMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth() + 1, 0); }
-function daysInMonth(d: Date) { return endOfMonth(d).getDate(); }
+
+function parseISO(iso?: string): Date | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function sameYM(a: Date, b: Date) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+}
+function monthKey(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function endOfMonth(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0);
+}
+function daysInMonth(d: Date) {
+  return endOfMonth(d).getDate();
+}
+function isoDateKey(d: Date) {
+  return d.toISOString().slice(0, 10);
+}
+function isoKeyFromStringDate(s: string | undefined): string | null {
+  const d = parseISO(s);
+  return d ? isoDateKey(d) : null;
+}
+
 function formatBRL(n: number) {
   const v = Number(n) || 0;
-  return "R$ " + new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
+  return (
+    "R$ " +
+    new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)
+  );
 }
 function parseBRL(s: string) {
   if (!s) return 0;
@@ -81,8 +151,22 @@ function parseBRL(s: string) {
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : 0;
 }
-function stripPrefix(s: string) { return (s || "").replace(/^R\$\s?/, ""); }
+function stripPrefix(s: string) {
+  return (s || "").replace(/^R\$\s?/, "");
+}
 
+/* =========================
+ *  Tipos para dados de gráfico
+ * ========================= */
+type DiaSerie = { dia: string; valor: number; lucro: number };
+type SerieHistorico6 = { label: string; venda: number; lucro: number };
+type SerieMediaCIA = { cia: string; media: number };
+type PontosProgramaRow = { programa: string; atuais: number; pendentes: number; total: number };
+type PontosProgramaAgg = { data: PontosProgramaRow[]; totais: { atuais: number; pendentes: number; total: number } };
+
+/* =========================
+ *  Componente principal
+ * ========================= */
 export default function AnalisePage() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
@@ -100,18 +184,18 @@ export default function AnalisePage() {
 
   const [cashTxns, setCashTxns] = useState<CashTxn[]>([]);
 
-  // Dívidas (lidas da página de dívidas)
+  // Dívidas
   const [debts, setDebts] = useState<Debt[]>([]);
   const [debtTxns, setDebtTxns] = useState<DebtTxn[]>([]);
 
-  /** Carregar dados do localStorage */
+  /** Carregar dados do localStorage (apenas 1x) */
   useEffect(() => {
-    setVendas(loadLS(VENDAS_KEY, [] as Venda[]));
-    setCompras(loadLS(COMPRAS_KEY, [] as Compra[]));
-    setManual(loadLS(MANUAL_KEY, manual));
-    setCashTxns(loadLS(CAIXA_TXNS_KEY, [] as CashTxn[]));
-    setDebts(loadLS(DEBTS_KEY, [] as Debt[]));
-    setDebtTxns(loadLS(DEBTS_TXNS_KEY, [] as DebtTxn[]));
+    setVendas(loadLS<Venda[]>(VENDAS_KEY, []));
+    setCompras(loadLS<Compra[]>(COMPRAS_KEY, []));
+    setManual(loadLS<Manual>(MANUAL_KEY, manual));
+    setCashTxns(loadLS<CashTxn[]>(CAIXA_TXNS_KEY, []));
+    setDebts(loadLS<Debt[]>(DEBTS_KEY, []));
+    setDebtTxns(loadLS<DebtTxn[]>(DEBTS_TXNS_KEY, []));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -121,40 +205,47 @@ export default function AnalisePage() {
   );
 
   /** Filtrar por mês selecionado */
-  const vendasMes = useMemo(() => {
+  const vendasMes = useMemo<Venda[]>(() => {
     const alvo = new Date(year, monthIdx, 1);
-    return vendas
-      .map((v) => ({ ...v, _d: parseISO(v.data) }))
-      .filter((v: any) => v._d && sameYM(v._d as Date, alvo));
+    return vendas.filter((v) => {
+      const d = parseISO(v.data);
+      return d ? sameYM(d, alvo) : false;
+    });
   }, [vendas, year, monthIdx]);
 
-  const comprasMes = useMemo(() => {
+  const comprasMes = useMemo<Compra[]>(() => {
     const alvo = new Date(year, monthIdx, 1);
-    return compras
-      .map((c) => ({ ...c, _d: parseISO(c.data) }))
-      .filter((c: any) => c._d && sameYM(c._d as Date, alvo));
+    return compras.filter((c) => {
+      const d = parseISO(c.data);
+      return d ? sameYM(d, alvo) : false;
+    });
   }, [compras, year, monthIdx]);
 
   /** ===== Métricas principais ===== */
   const metrics = useMemo(() => {
     const byDay = new Map<string, { valor: number; lucro: number; qtd: number }>();
-    let totalVendasMes = 0, totalLucroMes = 0, totalComprasMes = 0;
+    let totalVendasMes = 0;
+    let totalLucroMes = 0;
+    let totalComprasMes = 0;
 
-    for (const v of vendasMes as any[]) {
+    for (const v of vendasMes) {
       const valor = Number(v.valorTotal || 0);
       const lucro = Number(v.lucro || 0);
       totalVendasMes += valor;
-      totalLucroMes += lucro || 0;
+      totalLucroMes += lucro;
 
-      const key = v._d.toISOString().slice(0, 10);
+      const key = isoKeyFromStringDate(v.data);
+      if (!key) continue;
       const prev = byDay.get(key) || { valor: 0, lucro: 0, qtd: 0 };
-      prev.valor += valor; prev.lucro += lucro; prev.qtd += 1;
+      prev.valor += valor;
+      prev.lucro += lucro;
+      prev.qtd += 1;
       byDay.set(key, prev);
     }
 
     for (const c of comprasMes) totalComprasMes += Number(c.valorTotal || 0);
 
-    const todayKey = new Date().toISOString().slice(0, 10);
+    const todayKey = isoDateKey(new Date());
     const valorHoje = byDay.get(todayKey)?.valor || 0;
     const lucroHoje = byDay.get(todayKey)?.lucro || 0;
 
@@ -166,10 +257,15 @@ export default function AnalisePage() {
       hoje.getMonth() === monthIdx && hoje.getFullYear() === year ? hoje.getDate() : 1
     );
     const dow = ref.getDay();
-    const monday = new Date(ref); monday.setDate(ref.getDate() - ((dow + 6) % 7));
-    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const monday = new Date(ref);
+    monday.setDate(ref.getDate() - ((dow + 6) % 7));
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
     let valorSemana = 0;
-    for (const [k, v] of byDay) { const d = new Date(k); if (d >= monday && d <= sunday) valorSemana += v.valor; }
+    for (const [k, v] of byDay) {
+      const d = new Date(k);
+      if (d >= monday && d <= sunday) valorSemana += v.valor;
+    }
 
     return { byDay, totalVendasMes, totalLucroMes, totalComprasMes, valorHoje, lucroHoje, valorSemana };
   }, [vendasMes, comprasMes, year, monthIdx]);
@@ -179,9 +275,14 @@ export default function AnalisePage() {
     if (!isMesAtual) return null;
     const base = new Date(year, monthIdx, 1);
     const totalDias = daysInMonth(base);
+
+    // conta quantos dias únicos têm registro
     const diasComRegistro = new Set(
-      (vendasMes as any[]).map((v) => (v._d as Date).toISOString().slice(0, 10))
+      vendasMes
+        .map((v) => isoKeyFromStringDate(v.data))
+        .filter((k): k is string => Boolean(k))
     ).size;
+
     const diasCorridos = new Date().getDate();
     const divisor = Math.max(1, diasComRegistro || diasCorridos);
     const mediaDiaria = metrics.totalLucroMes / divisor;
@@ -190,10 +291,11 @@ export default function AnalisePage() {
   }, [isMesAtual, vendasMes, metrics.totalLucroMes, year, monthIdx]);
 
   /** ===== Comparação com meses anteriores (últimos 6) ===== */
-  const compHistorico = useMemo(() => {
+  const compHistorico = useMemo<SerieHistorico6[]>(() => {
     const map = new Map<string, { venda: number; lucro: number }>();
     for (const v of vendas) {
-      const d = parseISO(v.data); if (!d) continue;
+      const d = parseISO(v.data);
+      if (!d) continue;
       const mk = monthKey(d);
       const prev = map.get(mk) || { venda: 0, lucro: 0 };
       prev.venda += Number(v.valorTotal || 0);
@@ -201,7 +303,7 @@ export default function AnalisePage() {
       map.set(mk, prev);
     }
     const base = new Date(year, monthIdx, 1);
-    const arr: { label: string; venda: number; lucro: number }[] = [];
+    const arr: SerieHistorico6[] = [];
     for (let i = 5; i >= 0; i--) {
       const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
       const mk = monthKey(d);
@@ -212,7 +314,7 @@ export default function AnalisePage() {
   }, [vendas, year, monthIdx]);
 
   /** ===== Média de vendas por CIA aérea (mês) ===== */
-  const mediaPorCIA = useMemo(() => {
+  const mediaPorCIA = useMemo<SerieMediaCIA[]>(() => {
     const soma = new Map<string, { valor: number; qtd: number }>();
     for (const v of vendasMes) {
       const cia = (v.cia || "outros").toLowerCase();
@@ -228,9 +330,10 @@ export default function AnalisePage() {
   }, [vendasMes]);
 
   /** ===== Pontos por programa (atuais & pendentes) ===== */
-  const pontosPorPrograma = useMemo(() => {
+  const pontosPorPrograma = useMemo<PontosProgramaAgg>(() => {
     const programas = ["latam", "smiles", "livelo", "esfera"] as const;
-    const atual = new Map<string, number>(), pend = new Map<string, number>();
+    const atual = new Map<string, number>();
+    const pend = new Map<string, number>();
 
     for (const c of compras) {
       const pg = (c.programa || "").toLowerCase();
@@ -245,14 +348,18 @@ export default function AnalisePage() {
       else atual.set(pg, (atual.get(pg) || 0) - pts);
     }
 
-    const data = programas.map((p) => ({
+    const data: PontosProgramaRow[] = programas.map((p) => ({
       programa: p.toUpperCase(),
       atuais: atual.get(p) || 0,
       pendentes: pend.get(p) || 0,
       total: (atual.get(p) || 0) + (pend.get(p) || 0),
     }));
     const totais = data.reduce(
-      (a, r) => ({ atuais: a.atuais + r.atuais, pendentes: a.pendentes + r.pendentes, total: a.total + r.total }),
+      (a, r) => ({
+        atuais: a.atuais + r.atuais,
+        pendentes: a.pendentes + r.pendentes,
+        total: a.total + r.total,
+      }),
       { atuais: 0, pendentes: 0, total: 0 }
     );
 
@@ -260,13 +367,15 @@ export default function AnalisePage() {
   }, [vendas, compras]);
 
   /** ===== Vendas/Lucro por dia (mês) ===== */
-  const vendasPorDiaData = useMemo(() => {
-    const arr: { dia: string; valor: number; lucro: number }[] = [];
+  const vendasPorDiaData = useMemo<DiaSerie[]>(() => {
+    const arr: DiaSerie[] = [];
     const base = new Date(year, monthIdx, 1);
     const nDays = daysInMonth(base);
+    const byDay = metrics.byDay;
+
     for (let d = 1; d <= nDays; d++) {
-      const key = new Date(year, monthIdx, d).toISOString().slice(0, 10);
-      const v = metrics.byDay.get(key);
+      const key = isoDateKey(new Date(year, monthIdx, d));
+      const v = byDay.get(key);
       arr.push({ dia: String(d).padStart(2, "0"), valor: v?.valor || 0, lucro: v?.lucro || 0 });
     }
     return arr;
@@ -275,17 +384,22 @@ export default function AnalisePage() {
   /* ========= Dívidas (total em aberto) ========= */
   const totalDividasAbertas = useMemo(() => {
     const saldo = (debtId: string) => {
-      const d = debts.find(x => x.id === debtId); if (!d) return 0;
-      const adds = debtTxns.filter(t => t.debtId === debtId && t.tipo === "add").reduce((s, t) => s + t.valor, 0);
-      const pays = debtTxns.filter(t => t.debtId === debtId && t.tipo === "pay").reduce((s, t) => s + t.valor, 0);
+      const d = debts.find((x) => x.id === debtId);
+      if (!d) return 0;
+      const adds = debtTxns
+        .filter((t) => t.debtId === debtId && t.tipo === "add")
+        .reduce((s, t) => s + t.valor, 0);
+      const pays = debtTxns
+        .filter((t) => t.debtId === debtId && t.tipo === "pay")
+        .reduce((s, t) => s + t.valor, 0);
       return d.inicial + adds - pays;
     };
-    return debts.filter(d => !d.isClosed).reduce((s, d) => s + saldo(d.id), 0);
+    return debts.filter((d) => !d.isClosed).reduce((s, d) => s + saldo(d.id), 0);
   }, [debts, debtTxns]);
 
   /* ========= Aguardando clientes (automático das vendas pendentes) ========= */
   const aguardandoClientes = useMemo(() => {
-    return vendas.filter(v => v.pendenteCliente).reduce((s, v) => s + Number(v.valorTotal || 0), 0);
+    return vendas.filter((v) => v.pendenteCliente).reduce((s, v) => s + Number(v.valorTotal || 0), 0);
   }, [vendas]);
 
   /* ========= Caixa: base editável + movimentações desta página ========= */
@@ -293,15 +407,21 @@ export default function AnalisePage() {
   const [mObs, setMObs] = useState<string>("");
 
   function addCashTxn(tipo: CashTxn["tipo"]) {
-    const t: CashTxn = { id: crypto.randomUUID(), tipo, valor: mValor || 0, obs: mObs, dataISO: new Date().toISOString() };
+    const t: CashTxn = {
+      id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `tx-${Date.now()}`,
+      tipo,
+      valor: mValor || 0,
+      obs: mObs,
+      dataISO: new Date().toISOString(),
+    };
     const next = [t, ...cashTxns];
     setCashTxns(next);
     saveLS(CAIXA_TXNS_KEY, next);
   }
 
   const caixaCalculado = useMemo(() => {
-    const inSum  = cashTxns.filter(t => t.tipo === "caixa_in").reduce((s, t) => s + t.valor, 0);
-    const outSum = cashTxns.filter(t => t.tipo === "caixa_out").reduce((s, t) => s + t.valor, 0);
+    const inSum = cashTxns.filter((tx) => tx.tipo === "caixa_in").reduce((s, t) => s + t.valor, 0);
+    const outSum = cashTxns.filter((tx) => tx.tipo === "caixa_out").reduce((s, t) => s + t.valor, 0);
     return Number(manual.caixaAtual || 0) + inSum - outSum;
   }, [manual.caixaAtual, cashTxns]);
 
@@ -309,7 +429,7 @@ export default function AnalisePage() {
   const saldos = useMemo(() => {
     const caixa = caixaCalculado;
     const dividas = totalDividasAbertas;
-    const aReceber = Number(manual.valoresAReceber || 0); // mantido manual (outra tela)
+    const aReceber = Number(manual.valoresAReceber || 0);
     const pagarFuncs = Number(manual.pagarFuncionarios || 0);
     const pendCed = Number(manual.pendenteCedentes || 0);
 
@@ -321,7 +441,7 @@ export default function AnalisePage() {
 
   /** ===== Atualizar único campo editável (caixa) e demais se vierem de outra tela ===== */
   function updateManual<K extends keyof Manual>(k: K, value: number) {
-    const next = { ...manual, [k]: value } as Manual;
+    const next = { ...manual, [k]: value };
     setManual(next);
     saveLS(MANUAL_KEY, next);
   }
@@ -334,11 +454,16 @@ export default function AnalisePage() {
         <div className="flex gap-2">
           <select
             value={`${year}-${monthIdx}`}
-            onChange={(e) => { const [y, m] = e.target.value.split("-").map(Number); setYear(y); setMonthIdx(m); }}
+            onChange={(e) => {
+              const [y, m] = e.target.value.split("-").map(Number);
+              setYear(y);
+              setMonthIdx(m);
+            }}
             className="border rounded px-2 py-1"
           >
             {Array.from({ length: 12 }).map((_, i) => {
-              const d = new Date(); d.setMonth(d.getMonth() - i);
+              const d = new Date();
+              d.setMonth(d.getMonth() - i);
               return (
                 <option key={i} value={`${d.getFullYear()}-${d.getMonth()}`}>
                   {d.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}
@@ -354,14 +479,26 @@ export default function AnalisePage() {
         <CardKPI title="Venda (mês)" value={fmtMoney(metrics.totalVendasMes)} />
         <CardKPI title="Lucro (mês)" value={fmtMoney(metrics.totalLucroMes)} />
         <CardKPI title="Compra (mês)" value={fmtMoney(metrics.totalComprasMes)} />
-        <CardKPI title="Vendido hoje" value={fmtMoney(metrics.valorHoje)} subtitle={`Semana: ${fmtMoney(metrics.valorSemana)}`} />
+        <CardKPI
+          title="Vendido hoje"
+          value={fmtMoney(metrics.valorHoje)}
+          subtitle={`Semana: ${fmtMoney(metrics.valorSemana)}`}
+        />
       </section>
 
       {/* Projeção do mês (apenas no mês atual) */}
       {projecao && (
-        <section className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <CardKPI title="Média diária (lucro)" value={fmtMoney(projecao.mediaDiaria)} subtitle={`Base de ${projecao.divisor} dia(s)`} />
-          <CardKPI title="Projeção do mês (lucro)" value={fmtMoney(projecao.estimado)} subtitle={`${projecao.totalDias} dias no mês`} />
+        <section className="grid grid-cols-1 sm-grid-cols-2 sm:grid-cols-2 gap-4">
+          <CardKPI
+            title="Média diária (lucro)"
+            value={fmtMoney(projecao.mediaDiaria)}
+            subtitle={`Base de ${projecao.divisor} dia(s)`}
+          />
+          <CardKPI
+            title="Projeção do mês (lucro)"
+            value={fmtMoney(projecao.estimado)}
+            subtitle={`${projecao.totalDias} dias no mês`}
+          />
         </section>
       )}
 
@@ -374,7 +511,9 @@ export default function AnalisePage() {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="dia" />
               <YAxis />
-              <Tooltip formatter={(v: number) => fmtMoney(v)} />
+              <Tooltip
+                formatter={(v) => (typeof v === "number" ? fmtMoney(v) : String(v))}
+              />
               <Legend />
               <Line type="monotone" dataKey="valor" name="Vendas (R$)" dot={false} />
               <Line type="monotone" dataKey="lucro" name="Lucro (R$)" dot={false} />
@@ -392,7 +531,9 @@ export default function AnalisePage() {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="label" />
               <YAxis />
-              <Tooltip formatter={(v: number) => fmtMoney(v)} />
+              <Tooltip
+                formatter={(v) => (typeof v === "number" ? fmtMoney(v) : String(v))}
+              />
               <Legend />
               <Bar dataKey="venda" name="Vendas (R$)" />
               <Bar dataKey="lucro" name="Lucro (R$)" />
@@ -410,7 +551,9 @@ export default function AnalisePage() {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="cia" />
               <YAxis />
-              <Tooltip formatter={(v: number) => fmtMoney(v)} />
+              <Tooltip
+                formatter={(v) => (typeof v === "number" ? fmtMoney(v) : String(v))}
+              />
               <Legend />
               <Bar dataKey="media" name="Média (R$)" />
             </BarChart>
@@ -444,9 +587,15 @@ export default function AnalisePage() {
             <tfoot>
               <tr>
                 <td className="py-2 pr-4 font-medium">Totais</td>
-                <td className="py-2 pr-4 font-medium">{pontosPorPrograma.totais.atuais.toLocaleString("pt-BR")}</td>
-                <td className="py-2 pr-4 font-medium">{pontosPorPrograma.totais.pendentes.toLocaleString("pt-BR")}</td>
-                <td className="py-2 pr-4 font-semibold">{pontosPorPrograma.totais.total.toLocaleString("pt-BR")}</td>
+                <td className="py-2 pr-4 font-medium">
+                  {pontosPorPrograma.totais.atuais.toLocaleString("pt-BR")}
+                </td>
+                <td className="py-2 pr-4 font-medium">
+                  {pontosPorPrograma.totais.pendentes.toLocaleString("pt-BR")}
+                </td>
+                <td className="py-2 pr-4 font-semibold">
+                  {pontosPorPrograma.totais.total.toLocaleString("pt-BR")}
+                </td>
               </tr>
             </tfoot>
           </table>
@@ -459,11 +608,7 @@ export default function AnalisePage() {
 
         {/* Somente “Caixa atual (base)” é editável */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          <CurrencyInput
-            label="Caixa atual (base)"
-            value={manual.caixaAtual}
-            onChange={(v) => updateManual("caixaAtual", v)}
-          />
+          <CurrencyInput label="Caixa atual (base)" value={manual.caixaAtual} onChange={(v) => updateManual("caixaAtual", v)} />
 
           <ReadOnlyMoney label="Dívidas (automático)" value={totalDividasAbertas} />
           <ReadOnlyMoney label="Aguardando clientes (automático)" value={aguardandoClientes} />
@@ -491,10 +636,16 @@ export default function AnalisePage() {
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50" onClick={() => addCashTxn("caixa_in")}>
+            <button
+              className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50"
+              onClick={() => addCashTxn("caixa_in")}
+            >
               Entrada no caixa (+)
             </button>
-            <button className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50" onClick={() => addCashTxn("caixa_out")}>
+            <button
+              className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50"
+              onClick={() => addCashTxn("caixa_out")}
+            >
               Saída do caixa (-)
             </button>
           </div>
@@ -551,10 +702,18 @@ function CardKPI({ title, value, subtitle }: { title: string; value: string; sub
 }
 
 function CurrencyInput({
-  label, value, onChange,
-}: { label: string; value: number; onChange: (v: number) => void }) {
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+}) {
   const [txt, setTxt] = useState(formatBRL(value));
-  useEffect(() => { setTxt(formatBRL(value)); }, [value]);
+  useEffect(() => {
+    setTxt(formatBRL(value));
+  }, [value]);
 
   return (
     <label className="block">
@@ -563,7 +722,11 @@ function CurrencyInput({
         <span className="mr-2 text-slate-500">R$</span>
         <input
           value={stripPrefix(txt)}
-          onChange={(e) => { const raw = "R$ " + e.target.value; setTxt(raw); onChange(parseBRL(raw)); }}
+          onChange={(e) => {
+            const raw = "R$ " + e.target.value;
+            setTxt(raw);
+            onChange(parseBRL(raw));
+          }}
           onBlur={() => setTxt(formatBRL(parseBRL(txt)))}
           className="w-full outline-none"
           inputMode="decimal"
