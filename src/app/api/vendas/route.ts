@@ -299,7 +299,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     await writeCedentesPreservingShape(cedentes);
 
     return NextResponse.json({ ok: true, id, nextCedentes: cedentes }, { headers: noCache() });
-  } catch (e: unknown) {
+  } catch { {
     const msg = e instanceof Error ? e.message : "Erro inesperado";
     return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCache() });
   }
@@ -379,7 +379,7 @@ export async function PATCH(req: Request): Promise<NextResponse> {
       { ok: false, error: "Nada para atualizar (use pagamentoStatus ou cancel)." },
       { status: 400, headers: noCache() }
     );
-  } catch (e: unknown) {
+  } catch { {
     const msg = e instanceof Error ? e.message : "Erro inesperado";
     return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCache() });
   }
@@ -443,7 +443,7 @@ export async function DELETE(req: Request): Promise<NextResponse> {
     vendas.splice(idx, 1);
     await writeJson(VENDAS_FILE, vendas);
     return NextResponse.json({ ok: true, removedId: id }, { headers: noCache() });
-  } catch (e: unknown) {
+  } catch { {
     const msg = e instanceof Error ? e.message : "Erro inesperado";
     return NextResponse.json({ ok: false, error: msg }, { status: 500, headers: noCache() });
   }
