@@ -25,7 +25,7 @@ type FinalizacaoRec = {
   updatedAt?: string;
 };
 
-function noCache() {
+function noCache(): Record<string, string> {
   return {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
@@ -35,40 +35,51 @@ function noCache() {
   };
 }
 
-async function ensureDir() {
-  try { await fs.mkdir(DATA_DIR, { recursive: true }); } catch {}
+function errMsg(e: unknown, fallback = "Erro desconhecido"): string {
+  return e instanceof Error ? e.message : fallback;
+}
+function isErrno(e: unknown): e is { code?: string } {
+  return typeof e === "object" && e !== null && "code" in e;
+}
+
+async function ensureDir(): Promise<void> {
+  try {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+  } catch {
+    /* noop */
+  }
 }
 
 async function loadAll(): Promise<FinalizacaoRec[]> {
   try {
     const buf = await fs.readFile(DATA_FILE, "utf-8");
     const arr = JSON.parse(buf);
-    return Array.isArray(arr) ? arr : [];
-  } catch (e: any) {
-    if (e?.code === "ENOENT") return [];
+    return Array.isArray(arr) ? (arr as FinalizacaoRec[]) : [];
+  } catch (e: unknown) {
+    if (isErrno(e) && e.code === "ENOENT") return [];
     throw e;
   }
 }
 
-async function saveAll(list: FinalizacaoRec[]) {
+async function saveAll(list: FinalizacaoRec[]): Promise<void> {
   await ensureDir();
   await fs.writeFile(DATA_FILE, JSON.stringify(list, null, 2), "utf-8");
 }
 
-function genId() {
+function genId(): string {
   const d = new Date();
   const iso = d.toISOString().slice(0, 10).replace(/-/g, "");
   const rnd = Math.floor(Math.random() * 9000 + 1000);
   return `FIN-${iso}-${rnd}`;
 }
 
-function toNum(v: unknown) {
+function toNum(v: unknown): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
 
 /* ============ GET /api/finalizacoes ============ */
-export async function GET(req: Request) {
+export async function GET(req: Request): Promise<NextResponse> {
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
@@ -100,29 +111,29 @@ export async function GET(req: Request) {
       { items: list.slice(0, Math.max(1, limit)), total: list.length },
       { headers: noCache() }
     );
-  } catch (e: any) {
+  } catch (e: unknown) {
     return NextResponse.json(
-      { error: e?.message || "Erro ao carregar" },
+      { error: errMsg(e, "Erro ao carregar") },
       { status: 500, headers: noCache() }
     );
   }
 }
 
 /* ============ POST /api/finalizacoes ============ */
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<NextResponse> {
   try {
-    const body = await req.json();
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const list = await loadAll();
 
     const nowIso = new Date().toISOString();
     const rec: FinalizacaoRec = {
       id: genId(),
-      data: String(body?.data || nowIso.slice(0, 10)),
-      compraId: body?.compraId ?? null,
-      contaId: body?.contaId ?? null,
-      ownerFuncionarioId: body?.ownerFuncionarioId ?? null,
-      lucroFinalizacao: toNum(body?.lucroFinalizacao),
-      observacao: String(body?.observacao || ""),
+      data: String(body?.["data"] || nowIso.slice(0, 10)),
+      compraId: (body?.["compraId"] as string | null | undefined) ?? null,
+      contaId: (body?.["contaId"] as string | null | undefined) ?? null,
+      ownerFuncionarioId: (body?.["ownerFuncionarioId"] as string | null | undefined) ?? null,
+      lucroFinalizacao: toNum(body?.["lucroFinalizacao"]),
+      observacao: String(body?.["observacao"] ?? ""),
       createdAt: nowIso,
       updatedAt: nowIso,
     };
@@ -131,22 +142,22 @@ export async function POST(req: Request) {
     await saveAll(list);
 
     return NextResponse.json(rec, { status: 201, headers: noCache() });
-  } catch (e: any) {
+  } catch (e: unknown) {
     return NextResponse.json(
-      { error: e?.message || "Erro ao salvar" },
+      { error: errMsg(e, "Erro ao salvar") },
       { status: 500, headers: noCache() }
     );
   }
 }
 
 /* ============ PATCH /api/finalizacoes?id=XXX ============ */
-export async function PATCH(req: Request) {
+export async function PATCH(req: Request): Promise<NextResponse> {
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
     if (!id) return NextResponse.json({ error: "ID ausente" }, { status: 400, headers: noCache() });
 
-    const body = await req.json();
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const list = await loadAll();
     const idx = list.findIndex((x) => x.id === id);
     if (idx === -1)
@@ -155,13 +166,15 @@ export async function PATCH(req: Request) {
     const curr = list[idx];
     const updated: FinalizacaoRec = {
       ...curr,
-      data: body?.data ? String(body.data) : curr.data,
-      compraId: body?.compraId ?? curr.compraId,
-      contaId: body?.contaId ?? curr.contaId,
-      ownerFuncionarioId: body?.ownerFuncionarioId ?? curr.ownerFuncionarioId,
+      data: body?.["data"] ? String(body["data"]) : curr.data,
+      compraId: (body?.["compraId"] as string | null | undefined) ?? curr.compraId,
+      contaId: (body?.["contaId"] as string | null | undefined) ?? curr.contaId,
+      ownerFuncionarioId:
+        (body?.["ownerFuncionarioId"] as string | null | undefined) ?? curr.ownerFuncionarioId,
       lucroFinalizacao:
-        typeof body?.lucroFinalizacao !== "undefined" ? toNum(body.lucroFinalizacao) : curr.lucroFinalizacao,
-      observacao: typeof body?.observacao === "string" ? body.observacao : curr.observacao,
+        typeof body?.["lucroFinalizacao"] !== "undefined" ? toNum(body["lucroFinalizacao"]) : curr.lucroFinalizacao,
+      observacao:
+        typeof body?.["observacao"] === "string" ? (body["observacao"] as string) : curr.observacao,
       updatedAt: new Date().toISOString(),
     };
 
@@ -169,16 +182,16 @@ export async function PATCH(req: Request) {
     await saveAll(list);
 
     return NextResponse.json(updated, { headers: noCache() });
-  } catch (e: any) {
+  } catch (e: unknown) {
     return NextResponse.json(
-      { error: e?.message || "Erro ao atualizar" },
+      { error: errMsg(e, "Erro ao atualizar") },
       { status: 500, headers: noCache() }
     );
   }
 }
 
 /* ============ DELETE /api/finalizacoes?id=XXX ============ */
-export async function DELETE(req: Request) {
+export async function DELETE(req: Request): Promise<NextResponse> {
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
@@ -192,9 +205,9 @@ export async function DELETE(req: Request) {
 
     await saveAll(next);
     return NextResponse.json({ ok: true }, { headers: noCache() });
-  } catch (e: any) {
+  } catch (e: unknown) {
     return NextResponse.json(
-      { error: e?.message || "Erro ao excluir" },
+      { error: errMsg(e, "Erro ao excluir") },
       { status: 500, headers: noCache() }
     );
   }
