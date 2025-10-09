@@ -126,7 +126,7 @@ async function readJson<T>(file: string, fallback: T): Promise<T> {
   try {
     const raw = await fs.readFile(file, "utf8");
     return JSON.parse(raw) as T;
-  } catch (e: unknown) {
+  } catch {
     // ENOENT ou JSON inválido => retorna fallback
     return fallback;
   }
@@ -159,7 +159,7 @@ async function loadCedentesFile(): Promise<{
   list: CedenteRec[];
   write: (arr: CedenteRec[]) => Promise<void>;
 }> {
-  const parsed = await readJson<unknown>(CEDENTES_FILE, null);
+  const parsed = await readJson<unknown>(CEDENTES_FILE, null as unknown as Record<string, unknown>);
 
   let list: CedenteRec[] = [];
   if (Array.isArray(parsed)) {
@@ -216,7 +216,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       ? (body["cedentesSnapshot"] as unknown[])
       : [];
 
-    let cedentes: CedenteRec[] =
+    const cedentes: CedenteRec[] =
       Array.isArray(cedentesFromDisk) && cedentesFromDisk.length
         ? [...cedentesFromDisk]
         : seedArr.length
