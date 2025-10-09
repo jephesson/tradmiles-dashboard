@@ -17,13 +17,6 @@ type CIA = "latam" | "smiles";
 type Origem = "livelo" | "esfera";
 type Status = "aguardando" | "liberados";
 
-type Json =
-  | string
-  | number
-  | boolean
-  | null
-  | Json[]
-  | { [k: string]: Json };
 
 type AnyObj = Record<string, unknown>;
 
